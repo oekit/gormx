@@ -60,6 +60,22 @@ repo := gormrepo.NewGormRepository[Project](db,
   不丢 scope）
 - 默认无 decorator 即 passthrough：单租户服务零负担
 
+## SQLite 驱动与 cgo
+
+- **只用 gormx 不会引入 cgo**：生产代码仅依赖 `gorm.io/driver/mysql`（纯 Go）。
+  `gorm.io/driver/sqlite`（CGO 实现，mattn/go-sqlite3）只是本仓**测试依赖**（内存库），
+  不进消费方二进制；Go 1.17+ 模块图剪枝下，下游 go.mod / go.sum 不会出现任何
+  sqlite 条目。代价是本仓自身 `go test` 需要 CGO。
+- **想要纯 Go SQLite**：dialector 换 [glebarez/sqlite](https://github.com/glebarez/sqlite)
+  （modernc 系），`CGO_ENABLED=0` 全静态构建；复用已有 `*sql.DB` 用
+  `sqlite.Dialector{Conn: db}`。
+- **⚠️ 驱动名冲突，运行时才炸**：`modernc.org/sqlite` 与 `glebarez/go-sqlite`
+  （glebarez dialector 的底层）都在 `init()` 里注册名为 `"sqlite"` 的驱动，
+  **同时引入两者启动即 panic**（`sql: Register called twice for driver sqlite`）。
+  典型踩法：自己 `import _ "modernc.org/sqlite"` 又引 glebarez dialector。
+  注册者必须唯一——用 glebarez 就不要再直接 import modernc。mattn 系
+  （`gorm.io/driver/sqlite`）注册的是 `"sqlite3"`，与两者不冲突。
+
 ## 边界
 
 - HTTP handler 在 [hertz/crudh](https://github.com/oekit/hertz)（crudh 直接消费 crud.Service）
