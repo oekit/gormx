@@ -13,7 +13,7 @@ import (
 // 条件不再被静默丢弃。
 func TestQuery_Between_TwoVariadicValues(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "young", Age: 10})
@@ -32,7 +32,7 @@ func TestQuery_Between_TwoVariadicValues(t *testing.T) {
 // TestQuery_Between_Array2Any 回归测试（M5）：[2]any 形状仍然支持。
 func TestQuery_Between_Array2Any(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "young", Age: 10})
@@ -51,7 +51,7 @@ func TestQuery_Between_Array2Any(t *testing.T) {
 // （此前非 [2]any 的值会被静默丢弃整个条件）。
 func TestQuery_Between_SliceAny(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "young", Age: 10})
@@ -72,7 +72,7 @@ func TestQuery_Between_SliceAny(t *testing.T) {
 // 会让本应被过滤的行暴露出来。
 func TestQuery_Between_InvalidShape_FailClosed(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "a", Age: 10})
@@ -101,7 +101,7 @@ func TestQuery_Between_InvalidShape_FailClosed(t *testing.T) {
 // 不允许拼入 SQL。
 func TestQuery_UnknownOp_FailClosed(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "a", Age: 10})
@@ -120,7 +120,7 @@ func TestQuery_UnknownOp_FailClosed(t *testing.T) {
 // 1=0（该分支不命中任何行），且不吞掉其它 OR 分支的正常语义。
 func TestQuery_OrInvalidBranch_FailClosed(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "bob", Age: 30})
@@ -139,7 +139,7 @@ func TestQuery_OrInvalidBranch_FailClosed(t *testing.T) {
 // TestQuery_NotBetweenAndNotIn 验证 NOT BETWEEN / NOT IN 白名单操作符可用。
 func TestQuery_NotBetweenAndNotIn(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "young", Age: 10})
@@ -170,7 +170,7 @@ func TestQuery_NotBetweenAndNotIn(t *testing.T) {
 // GORM 只读第一行 → total 恒为第一组大小）。
 func TestGormRepository_List_GroupBy_Total(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	// 分组用列不存在，借用 Email 模拟 3 个分组：2 + 2 + 1 行
@@ -219,7 +219,7 @@ func TestGormRepository_List_GroupBy_Total(t *testing.T) {
 // 静默截断为第一个值（IN (1,2,3) 退化成 IN (1)），其余条件凭空消失。
 func TestQuery_In_TwoVariadicValues(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "a", Age: 10})
@@ -243,7 +243,7 @@ func TestQuery_In_TwoVariadicValues(t *testing.T) {
 // TestQuery_NotIn_TwoVariadicValues 同上，验证 NOT IN 的多值变参。
 func TestQuery_NotIn_TwoVariadicValues(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "a", Age: 10})

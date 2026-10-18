@@ -74,7 +74,7 @@ func seedTenantUsers(t *testing.T, db *gorm.DB) (int64, int64) {
 func TestQueryDecorator_GetByID_ScopeInjected(t *testing.T) {
 	db := setupTenantDB(t)
 	id1, id2 := seedTenantUsers(t, db)
-	repo := NewGormRepository[tenantUser](db, WithQueryDecorator[tenantUser](tenantDecorator))
+	repo := NewGormRepository[tenantUser, int64](db, WithQueryDecorator[tenantUser](tenantDecorator))
 
 	// 自己租户命中
 	got, err := repo.GetByID(withTenant(context.Background(), 1), id1)
@@ -96,7 +96,7 @@ func TestQueryDecorator_GetByID_ScopeInjected(t *testing.T) {
 func TestQueryDecorator_UpdateByID_ScopeInjected(t *testing.T) {
 	db := setupTenantDB(t)
 	id1, id2 := seedTenantUsers(t, db)
-	repo := NewGormRepository[tenantUser](db, WithQueryDecorator[tenantUser](tenantDecorator))
+	repo := NewGormRepository[tenantUser, int64](db, WithQueryDecorator[tenantUser](tenantDecorator))
 	ctx := withTenant(context.Background(), 1)
 
 	// 越权 UpdateFields：0 行受影响（GORM 不报错），行内容不变
@@ -143,7 +143,7 @@ func TestQueryDecorator_UpdateByID_ScopeInjected(t *testing.T) {
 func TestQueryDecorator_DeleteByID_ScopeInjected(t *testing.T) {
 	db := setupTenantDB(t)
 	id1, id2 := seedTenantUsers(t, db)
-	repo := NewGormRepository[tenantUser](db, WithQueryDecorator[tenantUser](tenantDecorator))
+	repo := NewGormRepository[tenantUser, int64](db, WithQueryDecorator[tenantUser](tenantDecorator))
 	ctx := withTenant(context.Background(), 1)
 
 	if err := repo.Delete(ctx, id2); err != nil {
@@ -172,7 +172,7 @@ func TestQueryDecorator_DeleteByID_ScopeInjected(t *testing.T) {
 func TestQueryDecorator_ListCount_ScopeInjected(t *testing.T) {
 	db := setupTenantDB(t)
 	seedTenantUsers(t, db)
-	repo := NewGormRepository[tenantUser](db, WithQueryDecorator[tenantUser](tenantDecorator))
+	repo := NewGormRepository[tenantUser, int64](db, WithQueryDecorator[tenantUser](tenantDecorator))
 	ctx := withTenant(context.Background(), 1)
 
 	list, total, err := repo.List(ctx, nil)
@@ -205,7 +205,7 @@ func TestQueryDecorator_ListCount_ScopeInjected(t *testing.T) {
 func TestQueryDecorator_NilScope_Passthrough(t *testing.T) {
 	db := setupTenantDB(t)
 	id1, id2 := seedTenantUsers(t, db)
-	repo := NewGormRepository[tenantUser](db, WithQueryDecorator[tenantUser](tenantDecorator))
+	repo := NewGormRepository[tenantUser, int64](db, WithQueryDecorator[tenantUser](tenantDecorator))
 
 	// ctx 无租户身份 → decorator 返回 nil → passthrough，能读到全部
 	ctx := context.Background()
@@ -226,7 +226,7 @@ func TestQueryDecorator_NilScope_Passthrough(t *testing.T) {
 func TestQueryDecorator_DefaultNoDecorator_Passthrough(t *testing.T) {
 	db := setupTenantDB(t)
 	id1, id2 := seedTenantUsers(t, db)
-	repo := NewGormRepository[tenantUser](db)
+	repo := NewGormRepository[tenantUser, int64](db)
 	ctx := context.Background()
 
 	if _, err := repo.GetByID(ctx, id1); err != nil {
@@ -241,7 +241,7 @@ func TestQueryDecorator_DefaultNoDecorator_Passthrough(t *testing.T) {
 func TestScopeRequired_NoDecorator_Errors(t *testing.T) {
 	db := setupTenantDB(t)
 	id1, _ := seedTenantUsers(t, db)
-	repo := NewGormRepository[tenantUser](db, WithScopeRequired[tenantUser]())
+	repo := NewGormRepository[tenantUser, int64](db, WithScopeRequired[tenantUser]())
 	ctx := context.Background()
 
 	if _, err := repo.GetByID(ctx, id1); err == nil {
@@ -262,7 +262,7 @@ func TestScopeRequired_NoDecorator_Errors(t *testing.T) {
 func TestScopeRequired_NilScope_Errors(t *testing.T) {
 	db := setupTenantDB(t)
 	id1, _ := seedTenantUsers(t, db)
-	repo := NewGormRepository[tenantUser](db,
+	repo := NewGormRepository[tenantUser, int64](db,
 		WithQueryDecorator[tenantUser](tenantDecorator),
 		WithScopeRequired[tenantUser](),
 	)
@@ -278,7 +278,7 @@ func TestScopeRequired_NilScope_Errors(t *testing.T) {
 func TestScopeRequired_EmptyScope_OK(t *testing.T) {
 	db := setupTenantDB(t)
 	id1, id2 := seedTenantUsers(t, db)
-	repo := NewGormRepository[tenantUser](db,
+	repo := NewGormRepository[tenantUser, int64](db,
 		WithQueryDecorator[tenantUser](func(ctx context.Context) func(*gorm.DB) *gorm.DB {
 			if tenantFrom(ctx) == 0 {
 				// admin：显式空 scope（非 nil），fail-closed 也放行
@@ -305,16 +305,16 @@ func TestScopeRequired_EmptyScope_OK(t *testing.T) {
 func TestQueryDecorator_RunInTx(t *testing.T) {
 	db := setupTenantDB(t)
 	id1, id2 := seedTenantUsers(t, db)
-	repo := NewGormRepository[tenantUser](db, WithQueryDecorator[tenantUser](tenantDecorator))
+	repo := NewGormRepository[tenantUser, int64](db, WithQueryDecorator[tenantUser](tenantDecorator))
 	ctx := withTenant(context.Background(), 1)
 
-	err := repo.RunInTx(ctx, func(txRepo crud.Repository[tenantUser]) error {
+	err := repo.RunInTx(ctx, func(txRepo crud.Repository[tenantUser, int64]) error {
 		// 事务内读：他租户被挡
 		if _, err := txRepo.GetByID(ctx, id2); err == nil {
 			t.Error("tx 内 GetByID 不应越权")
 		}
 		// 事务内行锁读（sqlite 退化普通读，但仍过 scope）
-		if txg, ok := txRepo.(crud.TxRepository[tenantUser]); ok {
+		if txg, ok := txRepo.(crud.TxRepository[tenantUser, int64]); ok {
 			if _, err := txg.GetByIDForUpdate(ctx, id2); err == nil {
 				t.Error("tx 内 GetByIDForUpdate 不应越权")
 			}
@@ -349,7 +349,7 @@ func TestQueryDecorator_RunInTx(t *testing.T) {
 func TestQueryDecorator_WithTx(t *testing.T) {
 	db := setupTenantDB(t)
 	id1, id2 := seedTenantUsers(t, db)
-	repo := NewGormRepository[tenantUser](db, WithQueryDecorator[tenantUser](tenantDecorator))
+	repo := NewGormRepository[tenantUser, int64](db, WithQueryDecorator[tenantUser](tenantDecorator))
 	ctx := withTenant(context.Background(), 1)
 
 	if _, err := repo.WithTx(db).GetByID(ctx, id2); err == nil {

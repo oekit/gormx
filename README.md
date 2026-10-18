@@ -21,8 +21,8 @@ go get github.com/oekit/gormx@v0.5.5
 | 包 | import 路径 | 做什么 |
 |---|---|---|
 | `gormx`（模块根包） | `github.com/oekit/gormx` | `Open`（函数选项连接池）、`OpenMySQL`、`Paginate`（单查询分页）、`InTransactionContext`、`FilterBuilder` |
-| `crud` | `github.com/oekit/gormx/crud` | 框架无关 CRUD Service：泛型 `NewBaseService[T, CreateReq, UpdateReq]`；repo 实现 `TxRepository` 时 Update 自动「事务 + FOR UPDATE 行锁」消除丢更新，afterUpdate 钩子失败整体回滚 |
-| `gormrepo` | `github.com/oekit/gormx/gormrepo` | `NewGormRepository[T](db, opts...)` 仓储实现（可选查询装饰器：行级 scope 自动注入，含按 ID 路径） |
+| `crud` | `github.com/oekit/gormx/crud` | 框架无关 CRUD Service：泛型 `NewBaseService[T, ID, CreateReq, UpdateReq]`（ID=实体主键类型，int64/string 文本主键/UUID 均可）；repo 实现 `TxRepository` 时 Update 自动「事务 + FOR UPDATE 行锁」消除丢更新，afterUpdate 钩子失败整体回滚 |
+| `gormrepo` | `github.com/oekit/gormx/gormrepo` | `NewGormRepository[T, ID](db, opts...)` 仓储实现（可选查询装饰器：行级 scope 自动注入，含按 ID 路径） |
 
 ## 快速使用
 
@@ -34,9 +34,11 @@ import (
 )
 
 db, _ := gormx.Open(dialector, gormx.WithConnectionPool(10, 100, time.Hour))
-repo := gormrepo.NewGormRepository[Project](db)
-svc := crud.NewBaseService[Project, CreateReq, UpdateReq](repo)
+repo := gormrepo.NewGormRepository[Project, int64](db)
+svc := crud.NewBaseService[Project, int64, CreateReq, UpdateReq](repo)
 ```
+
+> 第二个类型参数 `ID` 是实体主键类型（`comparable`）：int64 自增、string 文本主键（TEXT PRIMARY KEY）、UUID 等均可，v0.6.0 起不再写死 int64。
 
 ### 查询装饰器（多租户 / 行级隔离）
 
@@ -44,7 +46,7 @@ scope 从「每个调用点手拼」上收为仓储层强制——按 ID 的 Get
 同样自动注入（越权最常出在主键路径）：
 
 ```go
-repo := gormrepo.NewGormRepository[Project](db,
+repo := gormrepo.NewGormRepository[Project, int64](db,
     gormrepo.WithQueryDecorator[Project](func(ctx context.Context) func(*gorm.DB) *gorm.DB {
         uid := identity.UID(ctx)
         return func(db *gorm.DB) *gorm.DB { return db.Where("uid = ?", uid) }

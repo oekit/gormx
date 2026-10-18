@@ -8,8 +8,8 @@ import (
 
 // compile-time:确保本包实现 crud 仓储接口与事务能力接口。
 var (
-	_ crud.Repository[int]   = (*GormRepository[int])(nil)
-	_ crud.TxRepository[int] = (*GormRepository[int])(nil)
+	_ crud.Repository[int, int64]   = (*GormRepository[int, int64])(nil)
+	_ crud.TxRepository[int, int64] = (*GormRepository[int, int64])(nil)
 )
 
 // ApplyQuery 将 crud.Query 以完整语句形态（分页 + 排序 + 悲观锁）

@@ -28,16 +28,16 @@
 //	    Status int    `json:"status"`
 //	}
 //
-//	// 使用（GORM 后端）
-//	repo := gormrepo.NewGormRepository[Project](db)
-//	svc := crud.NewBaseService[Project, CreateProjectReq, UpdateProjectReq](repo)
+//	// 使用（GORM 后端；ID 为实体主键类型——int64 自增或 string 文本主键等）
+//	repo := gormrepo.NewGormRepository[Project, int64](db)
+//	svc := crud.NewBaseService[Project, int64, CreateProjectReq, UpdateProjectReq](repo)
 //	// HTTP Handler 见 github.com/oekit/hertz/crudh
 //	handler := crudh.NewHandler(svc)
 //	handler.RegisterRoutes(group, "/projects")
 //
 // # 自定义存储后端
 //
-// 实现 Repository[T] 接口（可选实现 TxRepository[T] 解锁 BaseService.Update
+// 实现 Repository[T, ID] 接口（可选实现 TxRepository[T, ID] 解锁 BaseService.Update
 // 的"事务 + 行锁读"并发语义），Query 经 Spec() 物化为后端无关的 QuerySpec
 // （AND/OR 条件、排序、预加载、字段裁剪、分组、分页、悲观锁语义位），
 // 由实现方翻译为具体查询语句——参考 gormrepo 的 applySpec。

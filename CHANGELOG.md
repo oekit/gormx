@@ -2,6 +2,27 @@
 
 所有 notable 变更记录如下。格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [v0.6.0] — 2026-10-19
+
+**BREAKING**: crud/gormrepo 主键类型泛型化（#7 问题 1）——接口全链路加 `ID comparable`
+泛型参数，文本主键（TEXT PRIMARY KEY）/UUID 等项目可直接实现 crud 契约，不再被写死 int64。
+
+- crud：`Reader[T]`/`Writer[T]`/`Repository[T]`/`TxRepository[T]`/`Service[T, C, U]` →
+  `[T, ID comparable]`；`BaseService`/`NewBaseService`/Set*Hook 签名同步（`id int64` → `id ID`）。
+  存量调用点机械迁移：`NewBaseService[T, C, U](repo)` → `NewBaseService[T, int64, C, U](repo)`
+- gormrepo：`GormRepository[T]` → `[T, ID comparable]`；`WithQueryDecorator`/`WithScopeRequired`
+  维持 `[T]`（decorator 不接触 ID，无需迁移）
+- **行为加固（同波）**：GetByID/Delete/BatchDelete 主键条件从 GORM 内联值改为
+  `clause.PrimaryColumn`（schema 解析 + 参数化）——GORM 将内联非数字 string 按 SQL 片段解析，
+  内联形态对文本主键是注入面/语法错误；int64 路径 SQL 语义不变；GetByID 未命中错误格式
+  `id=%d` → `id=%v`
+- 根包 `model.go`（BaseModel 系列）与 `singleton.go`（Identifier）**保留 int64**：
+  自增主键便捷基类，文本主键项目自定义实体 struct 即可
+- 新增文本主键回归测试（string PK 全路径：GetByID/UpdateFields/Delete/BatchDelete/
+  BaseService 事务路径/-race）
+- 消费方波次：data v0.14.0（crud 壳别名参数化 + cached ID 泛型化，go 地板 1.25+）、
+  hertz v0.7.0（crudh WithIDParser）
+
 ## [v0.5.5] — 2026-10-17
 
 - fix(deps): logx 地板 v0.5.0 → v0.6.0（零代码改动）

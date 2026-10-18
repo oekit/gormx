@@ -18,13 +18,14 @@ var ErrNotFound = errors.New("resource not found")
 // 与 data/gormx 的分页契约一致）。
 type PageResponse[T any] = pagination.PageResponse[T]
 
-// Service 是通用 Service 接口。
-type Service[T any, CreateReq, UpdateReq any] interface {
+// Service 是通用 Service 接口。ID 为实体主键类型（int64 自增、string 文本主键等，
+// 与 Repository 的 ID 同一类型）。
+type Service[T any, ID comparable, CreateReq, UpdateReq any] interface {
 	// Create 创建记录。
 	Create(ctx context.Context, req *CreateReq) (*T, error)
 
 	// Get 根据 ID 获取记录。
-	Get(ctx context.Context, id int64) (*T, error)
+	Get(ctx context.Context, id ID) (*T, error)
 
 	// GetOne 根据查询条件获取单条记录。
 	GetOne(ctx context.Context, q *Query) (*T, error)
@@ -33,87 +34,89 @@ type Service[T any, CreateReq, UpdateReq any] interface {
 	List(ctx context.Context, q *Query) (*PageResponse[T], error)
 
 	// Update 更新记录。
-	Update(ctx context.Context, id int64, req *UpdateReq) (*T, error)
+	Update(ctx context.Context, id ID, req *UpdateReq) (*T, error)
 
 	// Delete 删除记录。
-	Delete(ctx context.Context, id int64) error
+	Delete(ctx context.Context, id ID) error
 }
 
 // BaseService 是通用 Service 基类。
 // 提供基础 CRUD 逻辑，可通过 Hook 函数扩展。
-type BaseService[T any, CreateReq, UpdateReq any] struct {
-	repo Repository[T]
+type BaseService[T any, ID comparable, CreateReq, UpdateReq any] struct {
+	repo Repository[T, ID]
 
 	// Hook 函数
 	beforeCreate func(ctx context.Context, req *CreateReq, entity *T) error
 	afterCreate  func(ctx context.Context, entity *T) error
-	beforeUpdate func(ctx context.Context, id int64, req *UpdateReq, entity *T) error
+	beforeUpdate func(ctx context.Context, id ID, req *UpdateReq, entity *T) error
 	afterUpdate  func(ctx context.Context, entity *T) error
-	beforeDelete func(ctx context.Context, id int64) error
-	afterDelete  func(ctx context.Context, id int64) error
+	beforeDelete func(ctx context.Context, id ID) error
+	afterDelete  func(ctx context.Context, id ID) error
 	toEntity     func(req *CreateReq) *T
 	updateEntity func(entity *T, req *UpdateReq)
 }
 
 // NewBaseService 创建通用 Service 实例。
-func NewBaseService[T any, CreateReq, UpdateReq any](repo Repository[T]) *BaseService[T, CreateReq, UpdateReq] {
-	return &BaseService[T, CreateReq, UpdateReq]{
+// 存量 int64 主键调用点迁移：NewBaseService[T, CreateReq, UpdateReq] →
+// NewBaseService[T, int64, CreateReq, UpdateReq]。
+func NewBaseService[T any, ID comparable, CreateReq, UpdateReq any](repo Repository[T, ID]) *BaseService[T, ID, CreateReq, UpdateReq] {
+	return &BaseService[T, ID, CreateReq, UpdateReq]{
 		repo: repo,
 	}
 }
 
 // SetToEntity 设置 CreateReq → Entity 的转换函数。
 // 如果不设置，默认需要类型断言或手动处理。
-func (s *BaseService[T, C, U]) SetToEntity(fn func(req *C) *T) *BaseService[T, C, U] {
+func (s *BaseService[T, ID, C, U]) SetToEntity(fn func(req *C) *T) *BaseService[T, ID, C, U] {
 	s.toEntity = fn
 	return s
 }
 
 // SetUpdateEntity 设置 UpdateReq → Entity 的字段更新函数。
-func (s *BaseService[T, C, U]) SetUpdateEntity(fn func(entity *T, req *U)) *BaseService[T, C, U] {
+func (s *BaseService[T, ID, C, U]) SetUpdateEntity(fn func(entity *T, req *U)) *BaseService[T, ID, C, U] {
 	s.updateEntity = fn
 	return s
 }
 
 // SetBeforeCreate 设置创建前 Hook。
-func (s *BaseService[T, C, U]) SetBeforeCreate(fn func(ctx context.Context, req *C, entity *T) error) *BaseService[T, C, U] {
+func (s *BaseService[T, ID, C, U]) SetBeforeCreate(fn func(ctx context.Context, req *C, entity *T) error) *BaseService[T, ID, C, U] {
 	s.beforeCreate = fn
 	return s
 }
 
 // SetAfterCreate 设置创建后 Hook。
-func (s *BaseService[T, C, U]) SetAfterCreate(fn func(ctx context.Context, entity *T) error) *BaseService[T, C, U] {
+func (s *BaseService[T, ID, C, U]) SetAfterCreate(fn func(ctx context.Context, entity *T) error) *BaseService[T, ID, C, U] {
 	s.afterCreate = fn
 	return s
 }
 
 // SetBeforeUpdate 设置更新前 Hook。
-func (s *BaseService[T, C, U]) SetBeforeUpdate(fn func(ctx context.Context, id int64, req *U, entity *T) error) *BaseService[T, C, U] {
+func (s *BaseService[T, ID, C, U]) SetBeforeUpdate(fn func(ctx context.Context, id ID, req *U, entity *T) error) *BaseService[T, ID, C, U] {
 	s.beforeUpdate = fn
 	return s
 }
 
 // SetAfterUpdate 设置更新后 Hook。
-func (s *BaseService[T, C, U]) SetAfterUpdate(fn func(ctx context.Context, entity *T) error) *BaseService[T, C, U] {
+func (s *BaseService[T, ID, C, U]) SetAfterUpdate(fn func(ctx context.Context, entity *T) error) *BaseService[T, ID, C, U] {
 	s.afterUpdate = fn
 	return s
 }
 
 // SetBeforeDelete 设置删除前 Hook。
-func (s *BaseService[T, C, U]) SetBeforeDelete(fn func(ctx context.Context, id int64) error) *BaseService[T, C, U] {
+func (s *BaseService[T, ID, C, U]) SetBeforeDelete(fn func(ctx context.Context, id ID) error) *BaseService[T, ID, C, U] {
 	s.beforeDelete = fn
 	return s
 }
 
 // SetAfterDelete 设置删除后 Hook。
-func (s *BaseService[T, C, U]) SetAfterDelete(fn func(ctx context.Context, id int64) error) *BaseService[T, C, U] {
+func (s *BaseService[T, ID, C, U]) SetAfterDelete(fn func(ctx context.Context, id ID) error) *BaseService[T, ID, C, U] {
 	s.afterDelete = fn
 	return s
 }
 
 // Create 创建记录。
 // 必须通过 SetToEntity 设置转换函数，否则返回错误。
-func (s *BaseService[T, C, U]) Create(ctx context.Context, req *C) (*T, error) {
+func (s *BaseService[T, ID, C, U]) Create(ctx context.Context, req *C) (*T, error) {
 	if s.toEntity == nil {
 		return nil, fmt.Errorf("crud: toEntity converter not set; call SetToEntity before Create")
 	}
@@ -139,7 +142,7 @@ func (s *BaseService[T, C, U]) Create(ctx context.Context, req *C) (*T, error) {
 }
 
 // Get 根据 ID 获取记录。
-func (s *BaseService[T, C, U]) Get(ctx context.Context, id int64) (*T, error) {
+func (s *BaseService[T, ID, C, U]) Get(ctx context.Context, id ID) (*T, error) {
 	entity, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -151,7 +154,7 @@ func (s *BaseService[T, C, U]) Get(ctx context.Context, id int64) (*T, error) {
 }
 
 // GetOne 根据查询条件获取单条记录。
-func (s *BaseService[T, C, U]) GetOne(ctx context.Context, q *Query) (*T, error) {
+func (s *BaseService[T, ID, C, U]) GetOne(ctx context.Context, q *Query) (*T, error) {
 	entity, err := s.repo.GetOne(ctx, q)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -166,7 +169,7 @@ func (s *BaseService[T, C, U]) GetOne(ctx context.Context, q *Query) (*T, error)
 // 分页字段为诚实语义：当 q 为 nil 或未调用 Page() 时，查询为全量
 // （未分页），返回的 Page/PageSize 为 0 —— 不假装默认 Page=1/PageSize=20
 // 误导调用方把全量数据当有界结果处理。
-func (s *BaseService[T, C, U]) List(ctx context.Context, q *Query) (*PageResponse[T], error) {
+func (s *BaseService[T, ID, C, U]) List(ctx context.Context, q *Query) (*PageResponse[T], error) {
 	list, total, err := s.repo.List(ctx, q)
 	if err != nil {
 		return nil, err
@@ -205,18 +208,18 @@ func (s *BaseService[T, C, U]) List(ctx context.Context, q *Query) (*PageRespons
 // 行锁读"，消除并发 Update 同一 id 的丢更新（lost update）；afterUpdate
 // 钩子也随之入事务——钩子失败整体回滚，不再出现"钩子报错但写已提交"。
 // 仓储不支持事务能力时回退为无锁读-改-写（原语义）。
-func (s *BaseService[T, C, U]) Update(ctx context.Context, id int64, req *U) (*T, error) {
-	if txRepo, ok := s.repo.(TxRepository[T]); ok {
+func (s *BaseService[T, ID, C, U]) Update(ctx context.Context, id ID, req *U) (*T, error) {
+	if txRepo, ok := s.repo.(TxRepository[T, ID]); ok {
 		return s.updateInTx(ctx, txRepo, id, req)
 	}
 	return s.updateNoTx(ctx, id, req)
 }
 
 // updateInTx 事务路径：行锁读 → 业务转换 → 写入，原子提交。
-func (s *BaseService[T, C, U]) updateInTx(ctx context.Context, txRepo TxRepository[T], id int64, req *U) (*T, error) {
+func (s *BaseService[T, ID, C, U]) updateInTx(ctx context.Context, txRepo TxRepository[T, ID], id ID, req *U) (*T, error) {
 	var result *T
-	err := txRepo.RunInTx(ctx, func(repo Repository[T]) error {
-		lockRepo, ok := repo.(TxRepository[T])
+	err := txRepo.RunInTx(ctx, func(repo Repository[T, ID]) error {
+		lockRepo, ok := repo.(TxRepository[T, ID])
 		if !ok {
 			return fmt.Errorf("crud: tx repo does not implement TxRepository")
 		}
@@ -259,7 +262,7 @@ func (s *BaseService[T, C, U]) updateInTx(ctx context.Context, txRepo TxReposito
 }
 
 // updateNoTx 无事务回退路径（仓储不支持 TxRepository 时的原语义）。
-func (s *BaseService[T, C, U]) updateNoTx(ctx context.Context, id int64, req *U) (*T, error) {
+func (s *BaseService[T, ID, C, U]) updateNoTx(ctx context.Context, id ID, req *U) (*T, error) {
 	entity, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -295,7 +298,7 @@ func (s *BaseService[T, C, U]) updateNoTx(ctx context.Context, id int64, req *U)
 }
 
 // Delete 删除记录。
-func (s *BaseService[T, C, U]) Delete(ctx context.Context, id int64) error {
+func (s *BaseService[T, ID, C, U]) Delete(ctx context.Context, id ID) error {
 	if s.beforeDelete != nil {
 		if err := s.beforeDelete(ctx, id); err != nil {
 			return err

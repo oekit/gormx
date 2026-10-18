@@ -138,7 +138,7 @@ func TestPageResponse(t *testing.T) {
 // `WHERE name = 'bob' AND age > 30 OR age = 20` 语义正确。
 func TestQuery_OrWithWhere(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "bob", Age: 30})
@@ -163,7 +163,7 @@ func TestQuery_OrWithWhere(t *testing.T) {
 // TestQuery_OrOnly 验证仅有 Or 条件时生成有效查询。
 func TestQuery_OrOnly(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "bob", Age: 30})
