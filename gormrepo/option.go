@@ -54,7 +54,7 @@ func WithScopeRequired[T any]() RepositoryOption[T] {
 // scopedDB 应用查询装饰器，返回带 scope 的 gorm.DB。
 //
 // fail-closed 规则见 WithScopeRequired；默认无 decorator 时 passthrough。
-func (r *GormRepository[T]) scopedDB(ctx context.Context) (*gorm.DB, error) {
+func (r *GormRepository[T, ID]) scopedDB(ctx context.Context) (*gorm.DB, error) {
 	db := r.db.WithContext(ctx)
 	if r.cfg.queryDecorator == nil {
 		if r.cfg.scopeRequired {

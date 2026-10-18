@@ -219,7 +219,7 @@ func (q *Query) Page(page, pageSize int) *Query {
 // 即取即放，等于没有锁（纯安慰剂）。请配合事务使用（见仓储实现的
 // TxRepository.RunInTx）：
 //
-//	repo.RunInTx(ctx, func(txRepo Repository[T]) error {
+//	repo.RunInTx(ctx, func(txRepo Repository[T, ID]) error {
 //	    entity, err := txRepo.GetByIDForUpdate(ctx, id)
 //	    // ... 在同一事务内修改
 //	})

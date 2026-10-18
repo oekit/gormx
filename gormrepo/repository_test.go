@@ -32,7 +32,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 
 func TestGormRepository_CreateAndGetByID(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	u := &testUser{Name: "alice", Age: 30, Email: "a@e.com"}
@@ -54,7 +54,7 @@ func TestGormRepository_CreateAndGetByID(t *testing.T) {
 
 func TestGormRepository_GetByID_NotFound(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 
 	if _, err := repo.GetByID(context.Background(), 9999); err == nil {
 		t.Error("expected error for non-existent ID")
@@ -63,7 +63,7 @@ func TestGormRepository_GetByID_NotFound(t *testing.T) {
 
 func TestGormRepository_GetByCondition(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "bob", Age: 25, Email: "b@e.com"})
@@ -81,7 +81,7 @@ func TestGormRepository_GetByCondition(t *testing.T) {
 
 func TestGormRepository_GetOne(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "carol", Age: 20, Email: "c@e.com"})
@@ -98,7 +98,7 @@ func TestGormRepository_GetOne(t *testing.T) {
 
 func TestGormRepository_List(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	for i := 0; i < 5; i++ {
@@ -129,7 +129,7 @@ func TestGormRepository_List(t *testing.T) {
 
 func TestGormRepository_Update(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	u := &testUser{Name: "dave", Age: 50, Email: "d@e.com"}
@@ -147,7 +147,7 @@ func TestGormRepository_Update(t *testing.T) {
 
 func TestGormRepository_UpdateFields(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	u := &testUser{Name: "eve", Age: 30, Email: "e@e.com"}
@@ -164,7 +164,7 @@ func TestGormRepository_UpdateFields(t *testing.T) {
 
 func TestGormRepository_Delete(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	u := &testUser{Name: "frank", Age: 40, Email: "f@e.com"}
@@ -180,7 +180,7 @@ func TestGormRepository_Delete(t *testing.T) {
 
 func TestGormRepository_BatchCreate(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	users := []*testUser{
@@ -198,7 +198,7 @@ func TestGormRepository_BatchCreate(t *testing.T) {
 
 func TestGormRepository_BatchDelete(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	var ids []int64
@@ -219,7 +219,7 @@ func TestGormRepository_BatchDelete(t *testing.T) {
 
 func TestGormRepository_Exists(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "exists", Age: 1})
@@ -242,7 +242,7 @@ func TestGormRepository_Exists(t *testing.T) {
 
 func TestGormRepository_Count(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	_ = repo.Create(ctx, &testUser{Name: "a", Age: 5})
@@ -261,7 +261,7 @@ func TestGormRepository_Count(t *testing.T) {
 
 func TestGormRepository_WithTx_Commit(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	err := db.Transaction(func(tx *gorm.DB) error {
@@ -280,7 +280,7 @@ func TestGormRepository_WithTx_Commit(t *testing.T) {
 
 func TestGormRepository_WithTx_Rollback(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	forceErr := errors.New("force rollback")
@@ -301,7 +301,7 @@ func TestGormRepository_WithTx_Rollback(t *testing.T) {
 
 func TestGormRepository_DB(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 
 	if repo.DB() != db {
 		t.Error("DB() should return the underlying *gorm.DB")
@@ -312,7 +312,7 @@ func TestGormRepository_DB(t *testing.T) {
 // 的语句，page>=2 时聚合行被 OFFSET 跳过，total 恒为 0。
 func TestGormRepository_List_PagedTotal(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	for i := 0; i < 25; i++ {
@@ -345,7 +345,7 @@ func TestGormRepository_List_PagedTotal(t *testing.T) {
 // TestGormRepository_CountExists_IgnorePaging 验证 Count/Exists 不受分页影响。
 func TestGormRepository_CountExists_IgnorePaging(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 
 	for i := 0; i < 15; i++ {
@@ -387,7 +387,7 @@ func TestGormRepository_UpdateFields_NonIDPrimaryKey(t *testing.T) {
 	if err = db.AutoMigrate(&customPK{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	repo := NewGormRepository[customPK](db)
+	repo := NewGormRepository[customPK, int64](db)
 	ctx := context.Background()
 
 	e := &customPK{Name: "before"}
@@ -415,7 +415,7 @@ func TestGormRepository_UpdateFields_NonIDPrimaryKey(t *testing.T) {
 // 行为断言。
 func TestGormRepository_ExistsCount_ForUpdateNoLeak(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	ctx := context.Background()
 	if err := repo.Create(ctx, &testUser{Name: "bob", Age: 20}); err != nil {
 		t.Fatal(err)

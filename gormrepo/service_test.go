@@ -45,8 +45,8 @@ type userUpdateReq struct {
 // are chainable (return the receiver for fluent API).
 func TestNewBaseService(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo)
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo)
 	if svc == nil {
 		t.Fatal("expected non-nil service")
 	}
@@ -66,8 +66,8 @@ func TestNewBaseService(t *testing.T) {
 // converts the request, repo.Create persists, no hooks.
 func TestBaseService_Create_HappyPath(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser {
 			return &testUser{Name: r.Name, Age: r.Age, Email: r.Email}
 		})
@@ -98,8 +98,8 @@ func TestBaseService_Create_NoToEntity(t *testing.T) {
 	if migrateErr := db.AutoMigrate(&simpleEntity{}); migrateErr != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	repo := NewGormRepository[simpleEntity](db)
-	svc := crud.NewBaseService[simpleEntity, userCreateReq, userUpdateReq](repo)
+	repo := NewGormRepository[simpleEntity, int64](db)
+	svc := crud.NewBaseService[simpleEntity, int64, userCreateReq, userUpdateReq](repo)
 	// No SetToEntity — Create should fail with a clear error.
 
 	_, err = svc.Create(context.Background(), &userCreateReq{Name: "x"})
@@ -115,9 +115,9 @@ func TestBaseService_Create_NoToEntity(t *testing.T) {
 // beforeCreate hook returns an error. The repo.Create must NOT be called.
 func TestBaseService_Create_BeforeCreateError(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	beforeErr := errors.New("validation failed")
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name} }).
 		SetBeforeCreate(func(_ context.Context, _ *userCreateReq, _ *testUser) error {
 			return beforeErr
@@ -133,9 +133,9 @@ func TestBaseService_Create_BeforeCreateError(t *testing.T) {
 // afterCreate hook returns an error AFTER successful Create.
 func TestBaseService_Create_AfterCreateError(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	afterErr := errors.New("publish failed")
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name} }).
 		SetAfterCreate(func(_ context.Context, _ *testUser) error {
 			return afterErr
@@ -151,14 +151,14 @@ func TestBaseService_Create_AfterCreateError(t *testing.T) {
 // returns an error.
 func TestBaseService_Create_RepoError(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	// No SetToEntity → new(T) has all zero values. With Name required,
 	// GORM will reject. We use a closed DB to force a different
 	// error path that's not type-dependent.
 	sqlDB, _ := db.DB()
 	_ = sqlDB.Close()
 
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name} })
 
 	_, err := svc.Create(context.Background(), &userCreateReq{Name: "x"})
@@ -172,8 +172,8 @@ func TestBaseService_Create_RepoError(t *testing.T) {
 // TestBaseService_Get_HappyPath covers the happy path.
 func TestBaseService_Get_HappyPath(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name, Age: r.Age, Email: r.Email} })
 
 	created, _ := svc.Create(context.Background(), &userCreateReq{Name: "alice"})
@@ -191,8 +191,8 @@ func TestBaseService_Get_HappyPath(t *testing.T) {
 // return a *bizerrors.BizError with HTTP 404.
 func TestBaseService_Get_NotFound(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo)
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo)
 
 	_, err := svc.Get(context.Background(), 9999)
 	if err == nil {
@@ -212,8 +212,8 @@ func TestBaseService_Get_NotFound(t *testing.T) {
 // TestBaseService_GetOne_HappyPath covers the GetOne happy path.
 func TestBaseService_GetOne_HappyPath(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name, Age: r.Age, Email: r.Email} })
 
 	_, _ = svc.Create(context.Background(), &userCreateReq{Name: "alice"})
@@ -230,8 +230,8 @@ func TestBaseService_GetOne_HappyPath(t *testing.T) {
 // TestBaseService_GetOne_NotFound covers the "not found" branch.
 func TestBaseService_GetOne_NotFound(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo)
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo)
 
 	_, err := svc.GetOne(context.Background(), crud.NewQuery().Where("name", "=", "nobody"))
 	if err == nil {
@@ -252,8 +252,8 @@ func TestBaseService_GetOne_NotFound(t *testing.T) {
 // 时 Page/PageSize 为 0（诚实字段：不假装默认 Page=1/PageSize=20 误导调用方）。
 func TestBaseService_List_HappyPath(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name, Age: r.Age, Email: r.Email} })
 
 	// Insert 3 users.
@@ -282,8 +282,8 @@ func TestBaseService_List_HappyPath(t *testing.T) {
 // 时，同样视为未分页（Page/PageSize=0）。
 func TestBaseService_List_NilPageHonestFields(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name} })
 
 	for _, name := range []string{"a", "b"} {
@@ -306,8 +306,8 @@ func TestBaseService_List_NilPageHonestFields(t *testing.T) {
 // returns non-default page settings.
 func TestBaseService_List_WithQuery(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name, Age: r.Age, Email: r.Email} })
 
 	for _, name := range []string{"a", "b", "c", "d", "e"} {
@@ -333,8 +333,8 @@ func TestBaseService_List_WithQuery(t *testing.T) {
 // TestBaseService_Update_HappyPath covers the Update happy path.
 func TestBaseService_Update_HappyPath(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name, Age: r.Age, Email: r.Email} }).
 		SetUpdateEntity(func(e *testUser, r *userUpdateReq) {
 			e.Name = r.Name
@@ -356,8 +356,8 @@ func TestBaseService_Update_HappyPath(t *testing.T) {
 // doesn't exist.
 func TestBaseService_Update_NotFound(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo)
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo)
 
 	_, err := svc.Update(context.Background(), 9999, &userUpdateReq{Name: "x"})
 	var be *bizerrors.BizError
@@ -373,9 +373,9 @@ func TestBaseService_Update_NotFound(t *testing.T) {
 // the beforeUpdate hook errors before the repo.Update.
 func TestBaseService_Update_BeforeUpdateError(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	beforeErr := errors.New("validation failed")
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name} }).
 		SetBeforeUpdate(func(_ context.Context, _ int64, _ *userUpdateReq, _ *testUser) error {
 			return beforeErr
@@ -393,8 +393,8 @@ func TestBaseService_Update_BeforeUpdateError(t *testing.T) {
 // 此前会静默执行一次无变更的 Save 并"成功"。
 func TestBaseService_Update_NoUpdateEntity(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name, Age: r.Age, Email: r.Email} })
 
 	created, _ := svc.Create(context.Background(), &userCreateReq{Name: "alice", Age: 20})
@@ -422,8 +422,8 @@ func TestBaseService_Update_NoUpdateEntity(t *testing.T) {
 // TestBaseService_Delete_HappyPath covers the Delete happy path.
 func TestBaseService_Delete_HappyPath(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name} })
 
 	created, _ := svc.Create(context.Background(), &userCreateReq{Name: "alice"})
@@ -440,9 +440,9 @@ func TestBaseService_Delete_HappyPath(t *testing.T) {
 // the beforeDelete hook errors.
 func TestBaseService_Delete_BeforeDeleteError(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	beforeErr := errors.New("permission denied")
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name} }).
 		SetBeforeDelete(func(_ context.Context, _ int64) error {
 			return beforeErr
@@ -462,9 +462,9 @@ func TestBaseService_Delete_BeforeDeleteError(t *testing.T) {
 // the afterDelete hook errors AFTER the repo.Delete.
 func TestBaseService_Delete_AfterDeleteError(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	afterErr := errors.New("audit log failed")
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name} }).
 		SetAfterDelete(func(_ context.Context, _ int64) error {
 			return afterErr
@@ -485,7 +485,7 @@ func TestPaginateList_HappyPath(t *testing.T) {
 	ctx := context.Background()
 
 	for _, name := range []string{"a", "b", "c"} {
-		_ = NewGormRepository[testUser](db).Create(ctx, &testUser{Name: name, Age: 20})
+		_ = NewGormRepository[testUser, int64](db).Create(ctx, &testUser{Name: name, Age: 20})
 	}
 
 	req := pagination.NewPageRequest(1, 2)
@@ -507,7 +507,7 @@ func TestPaginateList_NilQuery(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
 
-	_ = NewGormRepository[testUser](db).Create(ctx, &testUser{Name: "a"})
+	_ = NewGormRepository[testUser, int64](db).Create(ctx, &testUser{Name: "a"})
 
 	req := pagination.NewPageRequest(1, 10)
 	resp, err := PaginateList[testUser](db.Model(&testUser{}), req, nil)
@@ -523,8 +523,8 @@ func TestPaginateList_NilQuery(t *testing.T) {
 // Pages(ceil(total/pageSize)),原实现漏填导致 crudh 列表 API pages 恒 0。
 func TestBaseService_List_PagesPopulated(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewGormRepository[testUser](db)
-	svc := crud.NewBaseService[testUser, map[string]any, map[string]any](repo)
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, map[string]any, map[string]any](repo)
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
 		if err := repo.Create(ctx, &testUser{Name: "u", Age: i}); err != nil {
@@ -558,14 +558,14 @@ func TestBaseService_List_PagesPopulated(t *testing.T) {
 // 必须整体回滚——钩子不得在提交后执行，避免"钩子报错但写已提交"误导调用方。
 func TestBaseService_Update_TxPath_AfterUpdateRollsBack(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	seed := &testUser{Name: "before", Email: "b@t.com", Age: 1}
 	if err := repo.Create(context.Background(), seed); err != nil {
 		t.Fatal(err)
 	}
 
 	afterErr := errors.New("after hook failed")
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetUpdateEntity(func(e *testUser, r *userUpdateReq) {
 			e.Name = r.Name
 		}).
@@ -589,13 +589,13 @@ func TestBaseService_Update_TxPath_AfterUpdateRollsBack(t *testing.T) {
 // TestBaseService_Update_TxPath_Commits 事务路径的正常提交。
 func TestBaseService_Update_TxPath_Commits(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 	seed := &testUser{Name: "old", Email: "o@t.com", Age: 2}
 	if err := repo.Create(context.Background(), seed); err != nil {
 		t.Fatal(err)
 	}
 
-	svc := crud.NewBaseService[testUser, userCreateReq, userUpdateReq](repo).
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
 		SetUpdateEntity(func(e *testUser, r *userUpdateReq) {
 			e.Name = r.Name
 		})
@@ -619,9 +619,9 @@ func TestBaseService_Update_TxPath_Commits(t *testing.T) {
 // TestGormRepository_RunInTx_Rollback RunInTx 基础语义：fn 失败回滚。
 func TestGormRepository_RunInTx_Rollback(t *testing.T) {
 	db := setupServiceTestDB(t)
-	repo := NewGormRepository[testUser](db)
+	repo := NewGormRepository[testUser, int64](db)
 
-	if err := repo.RunInTx(context.Background(), func(inner crud.Repository[testUser]) error {
+	if err := repo.RunInTx(context.Background(), func(inner crud.Repository[testUser, int64]) error {
 		if err := inner.Create(context.Background(), &testUser{Name: "tx", Email: "tx@t.com", Age: 1}); err != nil {
 			return err
 		}
