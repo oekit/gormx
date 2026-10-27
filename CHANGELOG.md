@@ -2,6 +2,15 @@
 
 所有 notable 变更记录如下。格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [Unreleased]
+
+- fix: `IsUniqueViolation` 补 sqlite 分支——glebarez/sqlite（纯 Go 驱动）撞唯一键的文案是
+  `UNIQUE constraint failed: <表>.<列>`，既不映射 `gorm.ErrDuplicatedKey`（未开
+  TranslateError），也不含 mysql/pg 的措辞 ⇒ 原实现**判不出来**。消费方实证：
+  pigeonbox/core 默认库就是 sqlite，其手搓判据正是为补这一段（oekit/gormx#30）。
+  同时补负例用例，确保 `CHECK constraint failed` / `FOREIGN KEY constraint failed`
+  这类普通约束错误不被宽判据误判成唯一冲突。
+
 ## [v0.6.1] — 2026-10-19
 
 - build: 矩阵内依赖地板对齐（align_floors 不动点）：logx v0.6.0 → v0.7.0、pkg v0.11.0 → v0.15.1
