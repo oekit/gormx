@@ -26,6 +26,28 @@ func TestIsUniqueViolation_MySQL(t *testing.T) {
 	}
 }
 
+func TestIsUniqueViolation_SQLite(t *testing.T) {
+	// glebarez/sqlite（纯 Go 驱动）的唯一冲突文案；既不映射 gorm.ErrDuplicatedKey
+	// （未开 TranslateError），也不含 mysql/pg 的措辞（oekit/gormx#30）。
+	err := &mockErr{msg: "UNIQUE constraint failed: file_codes.pickup_code"}
+	if !IsUniqueViolation(err) {
+		t.Error("expected true for SQLite UNIQUE constraint failed")
+	}
+}
+
+func TestIsUniqueViolation_NotAUniqueViolation(t *testing.T) {
+	// 负例：普通约束错误**不得**被宽判据误判成唯一冲突。
+	for _, msg := range []string{
+		"CHECK constraint failed: size > 0",
+		"FOREIGN KEY constraint failed",
+		"database is locked",
+	} {
+		if IsUniqueViolation(&mockErr{msg: msg}) {
+			t.Errorf("expected false for %q", msg)
+		}
+	}
+}
+
 func TestIsUniqueViolation_PostgreSQL(t *testing.T) {
 	err := &mockErr{msg: "duplicate key value violates unique constraint"}
 	if !IsUniqueViolation(err) {
