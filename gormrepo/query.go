@@ -59,7 +59,13 @@ func applySpec(db *gorm.DB, spec crud.QuerySpec, opts applyOptions) *gorm.DB {
 	}
 
 	// 应用字段选择
-	if len(spec.Selects) > 0 {
+	//
+	// **计数语句不应用 Selects**：GORM 的 Count 在 Statement.Selects 非空时
+	// 生成 `COUNT(<列>)` 而不是 `count(*)` ⇒
+	//   - 该列为 NULL 的行被漏计（实测：3 行含 1 行 name IS NULL ⇒ total 报 2）；
+	//   - 列名写错时直接 SQL 报错 "no such column"，计数整体失败。
+	// 计数的语义是"行数"，与查哪些列无关 ⇒ 计数路径一律丢弃 Selects。
+	if len(spec.Selects) > 0 && !opts.forCount {
 		db = db.Select(spec.Selects)
 	}
 
