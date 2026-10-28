@@ -2,6 +2,10 @@
 
 所有 notable 变更记录如下。格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [v0.6.3] — 2026-10-28
+
+- fix(gormrepo): 计数语句不再被 `Selects` 污染——GORM 的 `Count` 在 `Statement.Selects` 非空时生成 `COUNT(<列>)` 而非 `count(*)` ⇒ 该列为 NULL 的行被漏计（实测 3 行含 1 行 `name IS NULL` ⇒ total 报 2），列名写错时直接 SQL 报错 `no such column` 令计数整体不可用；分组计数同样受害。修法：计数路径一律丢弃 `Selects`（计数语义是「行数」，与查哪些列无关），列表路径不变
+
 ## [v0.6.2] — 2026-10-27
 
 - fix: `IsUniqueViolation` 补 sqlite 分支——glebarez/sqlite（纯 Go 驱动）撞唯一键的文案是
