@@ -28,6 +28,11 @@ func InTransactionContext(ctx context.Context, db *gorm.DB, fn TXFunc) error {
 // 注：sqlite 文案既不映射 gorm.ErrDuplicatedKey（未开 TranslateError 时），
 // 也不含 mysql/pg 的措辞 ⇒ 缺这条分支时 sqlite 下的唯一冲突**判不出来**
 // （消费方实证：pigeonbox/core 默认库就是 sqlite，见 oekit/gormx#30）。
+//
+// sqlite 分支由**纯 Go 驱动**（github.com/glebarez/sqlite）直接验证：2026-10-28
+// 起本模块测试改用该驱动（此前用 CGO 驱动 ⇒ 验证面 ≠ 承诺面，且免 CGO 环境
+// 跑不了本模块测试，见 oekit/gormx#36）。纯 Go 驱动的实际文案是
+// "constraint failed: UNIQUE constraint failed: <表>.<列> (2067)"——含上述子串。
 func IsUniqueViolation(err error) bool {
 	if err == nil {
 		return false

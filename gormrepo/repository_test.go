@@ -7,7 +7,7 @@ import (
 	"github.com/oekit/gormx/crud"
 	"testing"
 
-	"gorm.io/driver/sqlite"
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
 
