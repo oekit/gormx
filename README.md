@@ -64,13 +64,18 @@ repo := gormrepo.NewGormRepository[Project, int64](db,
 
 ## SQLite 驱动与 cgo
 
-- **只用 gormx 不会引入 cgo**：生产代码仅依赖 `gorm.io/driver/mysql`（纯 Go）。
-  `gorm.io/driver/sqlite`（CGO 实现，mattn/go-sqlite3）只是本仓**测试依赖**（内存库），
-  不进消费方二进制；Go 1.17+ 模块图剪枝下，下游 go.mod / go.sum 不会出现任何
-  sqlite 条目。代价是本仓自身 `go test` 需要 CGO。
-- **想要纯 Go SQLite**：dialector 换 [glebarez/sqlite](https://github.com/glebarez/sqlite)
-  （modernc 系），`CGO_ENABLED=0` 全静态构建；复用已有 `*sql.DB` 用
-  `sqlite.Dialector{Conn: db}`。
+- **只用 gormx 不会引入 cgo**：生产代码**不依赖任何 CGO 驱动**——
+  MySQL 走 `gorm.io/driver/mysql`（纯 Go），SQLite 走
+  [glebarez/sqlite](https://github.com/glebarez/sqlite)（modernc 系，纯 Go）。
+  ⇒ 本仓与消费方都能 `CGO_ENABLED=0` 构建/测试；`gorm.io/driver/sqlite`
+  （CGO 实现，mattn/go-sqlite3）**已不再被本仓任何代码引用**。
+- **依赖面与构建成本（2026-10-28 澄清，#41）**：根包的 sqlite 入口
+  `OpenPureGoSQLite` 需要纯 Go 驱动 ⇒ 它的传递依赖（`modernc.org/sqlite`
+  → `modernc.org/libc`）**会进每个消费方的构建**。实测**冷构建 +5s**
+  （`modernc.org/libc` 体量大）；只编 `gorm.io/gorm` 的话是 0.14s。
+  ⇒ 只需要 MySQL 的消费方也会付这份成本（增量的后续构建有缓存，摊薄明显）。
+- **想要纯 Go SQLite**：用 `gormx.OpenPureGoSQLite(dsn, opts...)`；
+  已有 `*sql.DB` 时用 `sqlite.Dialector{Conn: db}`。
 - **⚠️ 驱动名冲突，运行时才炸**：`modernc.org/sqlite` 与 `glebarez/go-sqlite`
   （glebarez dialector 的底层）都在 `init()` 里注册名为 `"sqlite"` 的驱动，
   **同时引入两者启动即 panic**（`sql: Register called twice for driver sqlite`）。
