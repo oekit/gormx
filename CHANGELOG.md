@@ -2,6 +2,22 @@
 
 所有 notable 变更记录如下。格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [v0.6.4] — 2026-10-28
+
+- fix(deps): 主模块去掉 CGO 驱动 `gorm.io/driver/sqlite`，测试改用纯 Go 驱动
+  `github.com/glebarez/sqlite` —— 该驱动此前**生产代码零使用**（只在测试里），
+  却是主模块 go.mod 的直接依赖 ⇒ 后果：① 本模块自己的测试套件**跑不了免 CGO
+  环境**（实测 `CGO_ENABLED=0 go test ./...` 全部失败："go-sqlite3 requires cgo to
+  work. This is a stub"），而 NAS 套件 / 容器静态构建（`CGO_ENABLED=0`）正是消费方
+  ⇒ **消费方能构建的环境，库自己却不可测**；② 判据 `IsUniqueViolation` 的 sqlite
+  分支声称覆盖「glebarez 纯 Go 驱动」的文案，而测试只跑 CGO 驱动 ⇒ **验证面 ≠
+  承诺面**（纯 Go 驱动的文案若变化，库内测不出来）。改用纯 Go 驱动后：测试套件可在
+  `CGO_ENABLED=0` 下运行，sqlite 文案由**承诺的那个驱动**直接验证
+  （实际文案 "constraint failed: UNIQUE constraint failed: <表>.<列> (2067)"），
+  主模块不再依赖任何 CGO 驱动（见 oekit/gormx#36）
+- feat(sqlite): 新增 `OpenPureGoSQLite(dsn, opts...)` —— 免 CGO 的 sqlite 打开入口
+  （与 `OpenMySQL` 对称），消费方不必各自拼驱动、拼出与判据口径错配的组合
+
 ## [v0.6.3] — 2026-10-28
 
 - fix(gormrepo): 计数语句不再被 `Selects` 污染——GORM 的 `Count` 在 `Statement.Selects` 非空时生成 `COUNT(<列>)` 而非 `count(*)` ⇒ 该列为 NULL 的行被漏计（实测 3 行含 1 行 `name IS NULL` ⇒ total 报 2），列名写错时直接 SQL 报错 `no such column` 令计数整体不可用；分组计数同样受害。修法：计数路径一律丢弃 `Selects`（计数语义是「行数」，与查哪些列无关），列表路径不变

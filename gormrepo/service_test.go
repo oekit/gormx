@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/glebarez/sqlite"
 	bizerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/pkg/pagination"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
