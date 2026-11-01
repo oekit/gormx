@@ -14,6 +14,12 @@ type PageResponse[T any] = pagination.PageResponse[T]
 
 // Paginate 执行分页查询，返回指定类型的分页结果。
 // queryFn 只调用一次（GORM 的 *gorm.DB 是不可变的，每次方法调用返回新实例）。
+// queryFn 可传 nil（等价于恒等 scope）。
+//
+// 若调用方既未在 db 上 Model() 也未在 queryFn 里 Table()/Model()，
+// 自动用泛型参数 T 补 Model(new(T))——否则 Count 步会报
+// "Table not set"，这是最常见的用法遗漏（13+ 处调用踩过）。
+// 显式 Table() 的自定义行扫描（join/Select 到非表结构体）不受影响。
 func Paginate[T any](db *gorm.DB, req *pagination.PageRequest, queryFn func(db *gorm.DB) *gorm.DB) (*PageResponse[T], error) {
 	// nil 请求按默认页兜底（handler 忘绑定分页参数时传 nil 是常见笔误，
 	// 直接触发 Normalize 的 nil dereference panic）
@@ -22,7 +28,13 @@ func Paginate[T any](db *gorm.DB, req *pagination.PageRequest, queryFn func(db *
 	}
 	req.Normalize()
 
-	baseDB := queryFn(db)
+	baseDB := db
+	if queryFn != nil {
+		baseDB = queryFn(db)
+	}
+	if st := baseDB.Statement; st != nil && st.Model == nil && st.Table == "" {
+		baseDB = baseDB.Model(new(T))
+	}
 
 	var total int64
 	if err := baseDB.Count(&total).Error; err != nil {

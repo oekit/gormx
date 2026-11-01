@@ -8,6 +8,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
+	bizerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/pkg/pagination"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -498,5 +499,85 @@ func TestBaseModel_AutoTimeStamps(t *testing.T) {
 	}
 	if !u.UpdatedAt.After(originalUpdated) {
 		t.Error("expected UpdatedAt to be advanced")
+	}
+}
+
+func TestPaginate_AutoModelFromGeneric(t *testing.T) {
+	db := newTestDB(t, &TestBase{})
+	for i := 0; i < 3; i++ {
+		if err := db.Create(&TestBase{Name: "auto"}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// queryFn 既不 Model 也不 Table —— Paginate 应从泛型 T 推导表名，
+	// 否则 Count 步报 "Table not set"（历史上 13+ 处调用踩过此坑）。
+	resp, err := Paginate[TestBase](db, &pagination.PageRequest{Page: 1, PageSize: 10}, func(db *gorm.DB) *gorm.DB {
+		return db.Where("name = ?", "auto").Order("id DESC")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 3 {
+		t.Errorf("expected total 3, got %d", resp.Total)
+	}
+	if len(resp.Items) != 3 {
+		t.Errorf("expected 3 items, got %d", len(resp.Items))
+	}
+}
+
+func TestPaginate_NilQueryFn(t *testing.T) {
+	db := newTestDB(t, &TestBase{})
+	if err := db.Create(&TestBase{Name: "nil-query"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// nil queryFn 等价恒等 scope，不再 panic
+	resp, err := Paginate[TestBase](db, &pagination.PageRequest{Page: 1, PageSize: 10}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 1 {
+		t.Errorf("expected total 1, got %d", resp.Total)
+	}
+}
+
+type flatRow struct {
+	ID   uint   `gorm:"column:id"`
+	Name string `gorm:"column:name"`
+}
+
+func TestPaginate_ExplicitTableKept(t *testing.T) {
+	db := newTestDB(t, &TestBase{})
+	if err := db.Create(&TestBase{Name: "explicit"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// queryFn 显式 Table + Select 到自定义行结构：自动 Model 不得覆盖
+	resp, err := Paginate[flatRow](db, &pagination.PageRequest{Page: 1, PageSize: 10}, func(db *gorm.DB) *gorm.DB {
+		return db.Table("test_bases").Select("id, name").Where("name = ?", "explicit")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 1 {
+		t.Errorf("expected total 1, got %d", resp.Total)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].Name != "explicit" {
+		t.Errorf("unexpected items: %+v", resp.Items)
+	}
+}
+
+func TestMapQueryError(t *testing.T) {
+	if err := MapQueryError("get x", "x not found", nil); err != nil {
+		t.Errorf("nil err should map to nil, got %v", err)
+	}
+	nf := MapQueryError("get x", "x not found", gorm.ErrRecordNotFound)
+	if nf == nil {
+		t.Fatal("record-not-found should map to biz error")
+	}
+	if be, ok := nf.(*bizerrors.BizError); !ok || be.BizCode != 404 {
+		t.Errorf("expected 404 BizError, got %v", nf)
+	}
+	other := MapQueryError("get x", "x not found", errors.New("boom"))
+	if be, ok := other.(*bizerrors.BizError); !ok || be.BizCode != 500 {
+		t.Errorf("expected 500 BizError, got %v", other)
 	}
 }
