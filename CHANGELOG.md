@@ -2,6 +2,10 @@
 
 所有 notable 变更记录如下。格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [v0.6.5] — 2026-11-01
+
+- feat(paginate): Paginate 自动 Model 推导（忘设 Model 不再报 Table not set）+ MapQueryError 统一 404/500 映射；queryFn 容忍 nil
+
 ## [v0.6.4] — 2026-10-28
 
 - fix(deps): 主模块去掉 CGO 驱动 `gorm.io/driver/sqlite`，测试改用纯 Go 驱动
