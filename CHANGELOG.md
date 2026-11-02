@@ -106,7 +106,7 @@ github.com/oekit/gormx                 # package gormx — 连接池增强/分�
 - `crud.Repository` / `TxRepository` — 仓储接口；TxRepository 解锁
   Update 的「事务 + FOR UPDATE 行锁」防丢更新，afterUpdate 钩子失败整体回滚
 - `gormrepo.NewGormRepository[T](db, opts...)` — GORM 仓储实现
-- `gormrepo.WithQueryDecorator` / `WithScopeRequired` — 多租户行级隔离：
+- `gormrepo.WithQueryDecorator` / `WithScopeRequired` — 多租户行级隔离（#4）：
   scope 自动注入（含按 ID 的 Get/Update/Delete），fail-closed 可选
 - 零 tracing 注入：SQL Span 经 `github.com/oekit/tracing/gormotel` 显式挂载
 
