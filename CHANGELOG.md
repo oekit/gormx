@@ -2,6 +2,10 @@
 
 所有 notable 变更记录如下。格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [v0.6.6] — 2026-11-02
+
+- build: 矩阵内依赖地板 `pkg` v0.31.0 → v0.31.1（维护轮全量对齐；本版不含 API 变更）
+
 ## [v0.6.5] — 2026-11-01
 
 - feat(paginate): Paginate 自动 Model 推导（忘设 Model 不再报 Table not set）+ MapQueryError 统一 404/500 映射；queryFn 容忍 nil
