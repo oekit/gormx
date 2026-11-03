@@ -2,6 +2,7 @@ package crud
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/oekit/pkg/pagination"
@@ -23,7 +24,8 @@ type Preload struct {
 
 // QuerySpec 是 Query 的中性物化形态，供存储后端实现（如 gormrepo）
 // 翻译为具体查询语句。根包不依赖任何 ORM；后端按 Spec 的字段语义渲染：
-//   - Conds 为 AND 条件、OrConds 为 OR 条件（均为有序）；
+//   - Conds 为 AND 条件、OrConds 为 OR 条件（均为有序）；分组（WhereGroup/
+//     OrGroup）在物化前已折叠为单个带括号条件，后端无需感知分组结构；
 //   - ForUpdate 为悲观锁语义（仅事务内有意义，见 Query.ForUpdate 注释）；
 //   - Page 为分页参数，nil 表示未分页。
 type QuerySpec struct {
@@ -64,7 +66,8 @@ var knownOps = map[string]struct{}{
 	"=": {}, "!=": {}, "<>": {},
 	"<": {}, ">": {}, "<=": {}, ">=": {},
 	"LIKE": {}, "ILIKE": {},
-	"IN": {}, "NOT IN": {},
+	"FIND_IN_SET": {},
+	"IN":          {}, "NOT IN": {},
 	"BETWEEN": {}, "NOT BETWEEN": {},
 	"IS NULL": {}, "IS NOT NULL": {},
 }
@@ -128,6 +131,24 @@ func buildCondition(field, op string, value []any) (query string, args []any, ok
 			return "", nil, false
 		}
 		return fmt.Sprintf("%s %s ? AND ?", field, op), []any{lo, hi}, true
+	case "FIND_IN_SET":
+		// FIND_IN_SET(?, field) > 0：逗号串列（如 MySQL 标签列）的成员测试，
+		// 针值在前、列在后（与下游手写形态 FIND_IN_SET(?, tags) > 0 对齐）。
+		// 针值必须是单个标量：GORM 会把 slice 参数展开成 (?, ?, ...)，
+		// 多值/切片/nil 一律按值形状非法 fail-closed —— 不重复 IN 多值
+		// 被 single() 静默截断的旧错。
+		if len(value) != 1 || value[0] == nil {
+			return "", nil, false
+		}
+		if v, isBytes := value[0].([]byte); isBytes {
+			// []byte 按单值绑定（驱动层不展开）
+			return fmt.Sprintf("FIND_IN_SET(?, %s) > 0", field), []any{v}, true
+		}
+		switch reflect.TypeOf(value[0]).Kind() {
+		case reflect.Slice, reflect.Array:
+			return "", nil, false
+		}
+		return fmt.Sprintf("FIND_IN_SET(?, %s) > 0", field), []any{value[0]}, true
 	case "LIKE", "ILIKE":
 		return fmt.Sprintf("%s %s ?", field, op), []any{single()}, true
 	default:
@@ -147,6 +168,7 @@ const failClosedCondition = "1=0"
 //	q.Where("status", "IN", []int{1,2,3})
 //	q.Where("name", "LIKE", "%test%")
 //	q.Where("name", "ILIKE", "%test%")
+//	q.Where("tags", "FIND_IN_SET", "go") // FIND_IN_SET(?, tags) > 0（MySQL 逗号串列）
 //	q.Where("deleted_at", "IS NULL", nil)
 //	q.Where("age", "BETWEEN", 18, 65)       // 两个连续变参
 //	q.Where("age", "BETWEEN", []any{18, 65}) // len==2 切片
@@ -178,6 +200,99 @@ func (q *Query) Or(field, op string, value ...any) *Query {
 	}
 	q.orConds = append(q.orConds, Condition{Query: query, Args: args})
 	return q
+}
+
+// WhereRaw 添加显式 raw SQL AND 条件（多占位符 + 多参数绑定）。
+//
+// 与 Where 的 field 内插路径分开：条件里需要拼表达式（自带 ?）时用 WhereRaw
+// 显式声明，避免把 raw 表达式塞进 field 造成占位符与参数错位漏绑。片段自动
+// 包一层括号（参数绑定不变），片段内部的 OR 不会击穿 AND 链优先级。
+//
+// sql 是调用方审计过的可信 SQL 片段（值仍走占位符参数化，禁止把外部输入
+// 拼进 sql 本身）；占位符数量与 args 的对应由调用方保证。空片段无法解析，
+// fail-closed 渲染为恒假的 1=0（与未知操作符同一纪律）。
+//
+//	q.WhereRaw("expire_date IS NULL OR expire_date > ?", now)
+//	// => WHERE (expire_date IS NULL OR expire_date > ?)
+func (q *Query) WhereRaw(sql string, args ...any) *Query {
+	if strings.TrimSpace(sql) == "" {
+		q.conds = append(q.conds, Condition{Query: failClosedCondition})
+		return q
+	}
+	q.conds = append(q.conds, Condition{Query: "(" + sql + ")", Args: args})
+	return q
+}
+
+// WhereGroup 在 AND 链中插入显式括号分组，支持组内 OR（A AND (B OR C)）。
+//
+// fn 在独立子 Query 上构建组内条件（组内 Where/Or 语义与顶层一致：Where
+// 条件间 AND、Or 分支整体 OR），渲染为单个带括号条件并入 AND 链 —— 组内 OR
+// 不会击穿链上其它过滤（此前只能全局 Or，SQL 恒为 (A AND B) OR C）。
+//
+// fn 返回 nil 时按传入的子 Query 处理；组内未添加任何条件时为 no-op
+// （与条件为 false 时跳过的语义一致，不凭空加恒假条件）。
+//
+//	q.Where("account_id", "=", 7).
+//	    WhereGroup(func(g *Query) *Query {
+//	        return g.Where("status", "=", "ok").Or("name", "LIKE", "%x%")
+//	    })
+//	// => WHERE account_id = ? AND (status = ? OR name LIKE ?)
+func (q *Query) WhereGroup(fn func(g *Query) *Query) *Query {
+	if c, ok := buildGroup(fn); ok {
+		q.conds = append(q.conds, c)
+	}
+	return q
+}
+
+// OrGroup 在 OR 链中插入显式括号分组（… OR (B AND C)）。
+// 分组整体作为一个 OR 分支，语义与 WhereGroup 相同。
+//
+//	q.Where("account_id", "=", 7).
+//	    OrGroup(func(g *Query) *Query {
+//	        return g.Where("status", "=", "ok").Where("name", "LIKE", "%x%")
+//	    })
+//	// => WHERE account_id = ? OR (status = ? AND name LIKE ?)
+func (q *Query) OrGroup(fn func(g *Query) *Query) *Query {
+	if c, ok := buildGroup(fn); ok {
+		q.orConds = append(q.orConds, c)
+	}
+	return q
+}
+
+// buildGroup 在独立子 Query 上执行 fn，把组内条件物化为单个带括号条件。
+// 返回 ok=false 表示组内没有任何条件（空组为 no-op，不向链上追加条件）。
+func buildGroup(fn func(g *Query) *Query) (Condition, bool) {
+	g := NewQuery()
+	if fn != nil {
+		if ret := fn(g); ret != nil {
+			g = ret
+		}
+	}
+	return g.groupCondition()
+}
+
+// groupCondition 把组内条件渲染为单个带括号条件（参数按渲染顺序收集，
+// Conds 在前、OrConds 在后）。组内语义与顶层一致：Where 条件间 AND，
+// Or 分支整体 OR（(A AND B) OR C）。叶子条件不含顶层 OR（buildCondition
+// 产物）或自带括号（WhereRaw/嵌套分组），拼接不会被 SQL 优先级击穿。
+func (q *Query) groupCondition() (Condition, bool) {
+	if len(q.conds) == 0 && len(q.orConds) == 0 {
+		return Condition{}, false
+	}
+	inner := ""
+	var args []any
+	appendList := func(list []Condition, sep string) {
+		for _, c := range list {
+			if inner != "" {
+				inner += sep
+			}
+			inner += c.Query
+			args = append(args, c.Args...)
+		}
+	}
+	appendList(q.conds, " AND ")
+	appendList(q.orConds, " OR ")
+	return Condition{Query: "(" + inner + ")", Args: args}, true
 }
 
 // Order 设置排序。
