@@ -2,6 +2,13 @@
 
 所有 notable 变更记录如下。格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [v0.7.1] — 2026-11-03
+
+- 修 FilterBuilder.Add OR 片段自动加括号，消灭 `(... AND a) OR b` 击穿组合条件（#63）
+- 新增 WhereGroup/OrGroup 分组条件、FIND_IN_SET 白名单与 WhereRaw 逃生舱（#64）
+
+关联问题单：gormx#63、gormx#64。
+
 ## [v0.7.0] — 2026-11-03
 
 - feat(crud)!: Writer 写方法回传 RowsAffected + UpdateOption 列白名单（immutable 列保护）+ ErrMapper 错误出口可映射消费方码表（#60 #61 #62）
