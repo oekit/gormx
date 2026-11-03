@@ -57,7 +57,7 @@ func TestGormRepository_TextPK_CRUD(t *testing.T) {
 		t.Errorf("miss want ErrNotFound chain, got %v", err)
 	}
 
-	if err := repo.UpdateFields(ctx, textPKID, map[string]any{"name": "doc1-upd"}); err != nil {
+	if _, err := repo.UpdateFields(ctx, textPKID, map[string]any{"name": "doc1-upd"}); err != nil {
 		t.Fatalf("UpdateFields: %v", err)
 	}
 	got, _ = repo.GetByID(ctx, textPKID)
@@ -65,7 +65,7 @@ func TestGormRepository_TextPK_CRUD(t *testing.T) {
 		t.Errorf("after UpdateFields Name = %q, want doc1-upd", got.Name)
 	}
 
-	if err := repo.Delete(ctx, textPKID); err != nil {
+	if _, err := repo.Delete(ctx, textPKID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if _, err := repo.GetByID(ctx, textPKID); !errors.Is(err, crud.ErrNotFound) {
@@ -84,7 +84,7 @@ func TestGormRepository_TextPK_BatchDelete(t *testing.T) {
 			t.Fatalf("Create %s: %v", id, err)
 		}
 	}
-	if err := repo.BatchDelete(ctx, []string{textPKID, textPKID2}); err != nil {
+	if _, err := repo.BatchDelete(ctx, []string{textPKID, textPKID2}); err != nil {
 		t.Fatalf("BatchDelete: %v", err)
 	}
 	var count int64

@@ -25,7 +25,26 @@ type Reader[T any, ID comparable] interface {
 	Count(ctx context.Context, q *Query) (int64, error)
 }
 
+// UpdateOption 配置单次 Update 的写入形态（crud.UpdateOption{Columns: ...}）。
+type UpdateOption struct {
+	// Columns 是本次写入的列白名单（immutable 列保护：字典 type 建后不可改、
+	// param 仅改 value 列等场景）。非空时只写白名单内的列——传入实体携带的
+	// 白名单外字段（含 immutable 列的差异）一律不落库；零值列也显式写入，
+	// 不再受 GORM struct 零值跳过规则摆布。
+	// 空（未设置）= 全字段覆写（等价 Select("*")，含零值列）。
+	// 多个 UpdateOption 同时给出非空 Columns 时以最后一个为准。
+	Columns []string
+}
+
 // Writer 是写入仓储接口，适用于只需要写入能力的场景。
+// Update/UpdateFields/Delete/BatchDelete 回传受影响行数（RowsAffected）：
+// 0 = 未命中任何行，>0 = 实际命中的行数——found 标志语义（zeus rpchandler
+// 的 found=false → 40401 一类）由调用方按行数自行构造。
+//
+// ⚠️ RowsAffected 单独无法区分「行不存在」与「no-op 更新」：MySQL 默认只计
+// 实际改变的行（同值更新计 0 行），sqlite 计命中行（同值更新计 1 行）。
+// 「确实无行 → ErrNotFound」与「no-op → 成功/NotFound 可配」的口径统一由
+// Service 层（BaseService）承担，见 ServiceOption。
 type Writer[T any, ID comparable] interface {
 	// Create 创建记录。
 	Create(ctx context.Context, entity *T) error
@@ -33,17 +52,18 @@ type Writer[T any, ID comparable] interface {
 	// BatchCreate 批量创建记录。
 	BatchCreate(ctx context.Context, entities []*T, batchSize int) error
 
-	// Update 更新记录。
-	Update(ctx context.Context, entity *T) error
+	// Update 更新记录，回传受影响行数。
+	// opts 限定写入列（immutable 列保护），见 UpdateOption；不传 = 全字段覆写。
+	Update(ctx context.Context, entity *T, opts ...UpdateOption) (int64, error)
 
-	// UpdateFields 根据 ID 更新指定字段。
-	UpdateFields(ctx context.Context, id ID, fields map[string]any) error
+	// UpdateFields 根据 ID 更新指定字段（fields 的键即写入列），回传受影响行数。
+	UpdateFields(ctx context.Context, id ID, fields map[string]any) (int64, error)
 
-	// Delete 根据 ID 删除记录。
-	Delete(ctx context.Context, id ID) error
+	// Delete 根据 ID 删除记录，回传受影响行数（0 = 记录不存在）。
+	Delete(ctx context.Context, id ID) (int64, error)
 
-	// BatchDelete 批量删除记录。
-	BatchDelete(ctx context.Context, ids []ID) error
+	// BatchDelete 批量删除记录，回传受影响行数。
+	BatchDelete(ctx context.Context, ids []ID) (int64, error)
 }
 
 // TxRepository 是支持事务的仓储可选能力。

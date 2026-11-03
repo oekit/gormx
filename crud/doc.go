@@ -13,6 +13,22 @@
 // []any、两个连续变参三种形状）一律渲染为恒假的 1=0 —— 过滤条件绝不会被
 // 静默丢弃，避免租户/权限过滤凭空消失造成数据暴露。
 //
+// # 写语义：RowsAffected / found / immutable 列
+//
+// Writer.Update/UpdateFields/Delete/BatchDelete 回传受影响行数：0 = 未命中
+// （记录不存在），>0 = 实际改动——found 标志语义由调用方按行数构造。
+// BaseService 在此基础上提供 found 语义：ErrNotFound 只在「确实无行」时
+// 返回（Update 在读步判定；Delete 按 0 行判定，不再静默成功）；no-op 更新
+// （写步 0 行）默认视为成功，可经 WithNoOpUpdateAsNotFound 切换为 not-found。
+// Update 经 crud.UpdateOption{Columns: ...}（Service 层 SetUpdateColumns）
+// 限定写入列，immutable 列不被全字段覆写写穿。
+//
+// # 错误映射
+//
+// not-found 对外默认 BizCode=404 的 BizError（Cause 链保留 ErrNotFound）；
+// 消费方经 WithErrMapper / WithNotFoundErr 把 not-found / duplicate 等映射进
+// 自有码表（含哨兵 error 形态），内部判定路径不变（errors.Is(err, ErrNotFound)）。
+//
 // # 用法
 //
 //	// 定义实体（嵌入 gormx.Model）

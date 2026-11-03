@@ -200,55 +200,79 @@ func (r *GormRepository[T, ID]) List(ctx context.Context, q *crud.Query) ([]T, i
 	return list, total, nil
 }
 
-// Update 更新记录。
+// Update 更新记录，回传受影响行数（0 = 未命中任何行 / MySQL 同值 no-op）。
+// opts 限定写入列（crud.UpdateOption{Columns: ...}）：非空时只写白名单列
+// （immutable 列保护，零值列显式写入），空时全字段覆写。
 // 自动注入查询装饰器（按主键路径：漏 scope = 越权改他行）。
 //
 // 不用 gorm.Save：Save 在 UPDATE 命中 0 行时回退 upsert
 // （INSERT ... ON CONFLICT DO UPDATE），完全绕过 scope WHERE，多租户下
-// 等同越权写旁路。改用 Select("*") + Updates 全字段更新，scope WHERE
+// 等同越权写旁路。改用 Select + Updates 更新，scope WHERE
 // 与主键条件合并且无 upsert 旁路（0 行即结束，不插入）。
-func (r *GormRepository[T, ID]) Update(ctx context.Context, entity *T) error {
+func (r *GormRepository[T, ID]) Update(ctx context.Context, entity *T, opts ...crud.UpdateOption) (int64, error) {
 	db, err := r.scopedDB(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return db.Model(entity).Select("*").Updates(entity).Error
+	// 缺省全字段覆写（Select("*")：零值列也显式写入，不受 struct 零值跳过摆布）；
+	// 白名单非空时只写白名单列（UpdateOption 文档：多个 opts 以最后一个非空为准）。
+	sel := db.Model(entity).Select("*")
+	if cols := lastUpdateColumns(opts); len(cols) > 0 {
+		sel = db.Model(entity).Select(cols)
+	}
+	res := sel.Updates(entity)
+	return res.RowsAffected, res.Error
 }
 
-// UpdateFields 根据 ID 更新指定字段。
+// lastUpdateColumns 取 opts 中最后一个非空 Columns（UpdateOption 文档约定）。
+func lastUpdateColumns(opts []crud.UpdateOption) []string {
+	var cols []string
+	for _, o := range opts {
+		if len(o.Columns) > 0 {
+			cols = o.Columns
+		}
+	}
+	return cols
+}
+
+// UpdateFields 根据 ID 更新指定字段，回传受影响行数（0 = 记录不存在）。
+// fields 的键即写入列（天然列白名单形态）。
 // 主键列由 GORM schema 解析（不要求主键列名为 "id"）。
 // 自动注入查询装饰器。
-func (r *GormRepository[T, ID]) UpdateFields(ctx context.Context, id ID, fields map[string]any) error {
+func (r *GormRepository[T, ID]) UpdateFields(ctx context.Context, id ID, fields map[string]any) (int64, error) {
 	db, err := r.scopedDB(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var entity T
-	return db.Model(&entity).
+	res := db.Model(&entity).
 		Where(clause.Eq{Column: clause.PrimaryColumn, Value: id}).
-		Updates(fields).Error
+		Updates(fields)
+	return res.RowsAffected, res.Error
 }
 
-// Delete 根据 ID 删除记录。
+// Delete 根据 ID 删除记录，回传受影响行数（0 = 记录不存在）。
 // 主键条件经 clause.PrimaryColumn 由 schema 解析（同 GetByID，不走内联值）。
 // 自动注入查询装饰器（按主键路径：漏 scope = 越权删他行）。
-func (r *GormRepository[T, ID]) Delete(ctx context.Context, id ID) error {
+func (r *GormRepository[T, ID]) Delete(ctx context.Context, id ID) (int64, error) {
 	db, err := r.scopedDB(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var entity T
-	return db.Where(clause.Eq{Column: clause.PrimaryColumn, Value: id}).Delete(&entity).Error
+	res := db.Where(clause.Eq{Column: clause.PrimaryColumn, Value: id}).Delete(&entity)
+	return res.RowsAffected, res.Error
 }
 
-// BatchDelete 批量删除记录。自动注入查询装饰器。
-func (r *GormRepository[T, ID]) BatchDelete(ctx context.Context, ids []ID) error {
+// BatchDelete 批量删除记录，回传受影响行数。自动注入查询装饰器。
+func (r *GormRepository[T, ID]) BatchDelete(ctx context.Context, ids []ID) (int64, error) {
 	db, err := r.scopedDB(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var entity T
-	return db.Where(clause.IN{Column: clause.PrimaryColumn, Values: anyIDs(ids)}).Delete(&entity).Error
+	res := db.Where(clause.IN{Column: clause.PrimaryColumn, Values: anyIDs(ids)}).Delete(&entity)
+	return res.RowsAffected, res.Error
 }
 
 // anyIDs 把 []ID 装箱为 []any（clause.IN.Values 形态）。
