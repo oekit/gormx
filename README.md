@@ -62,6 +62,25 @@ repo := gormrepo.NewGormRepository[Project, int64](db,
   不丢 scope）
 - 默认无 decorator 即 passthrough：单租户服务零负担
 
+### 写语义（RowsAffected / found）与错误映射
+
+写方法回传受影响行数（0 = 记录不存在，>0 = 实际改动），found 标志可按行数
+构造；`BaseService` 提供 found 语义——`ErrNotFound` 只在「确实无行」时返回
+（Delete 不再对不存在的记录静默成功），no-op 更新（写步 0 行）默认视为成功，
+可切 `WithNoOpUpdateAsNotFound()`（rows==0 → 404 契约）：
+
+```go
+// immutable 列保护：只写白名单列，type/email 等列不被全字段覆写写穿
+repo.Update(ctx, entity, crud.UpdateOption{Columns: []string{"name", "remark", "status"}})
+svc := crud.NewBaseService[Project, int64, CreateReq, UpdateReq](repo,
+    crud.WithNoOpUpdateAsNotFound(),                       // no-op → not-found
+    crud.WithNotFoundErr(bizerrors.NewBizErrorWithStatus(40401, 404, "not found")), // 消费方码表
+    // 或 crud.WithErrMapper(fn) 自定义 not-found / duplicate 映射（含哨兵形态）
+).SetUpdateColumns("name", "remark", "status") // Service 层列白名单
+```
+
+内部判定路径不变（`errors.Is(err, crud.ErrNotFound)` 一直成立），映射只改对外形态。
+
 ## SQLite 驱动与 cgo
 
 - **只用 gormx 不会引入 cgo**：生产代码**不依赖任何 CGO 驱动**——

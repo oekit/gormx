@@ -136,7 +136,7 @@ func TestGormRepository_Update(t *testing.T) {
 	_ = repo.Create(ctx, u)
 
 	u.Age = 51
-	if err := repo.Update(ctx, u); err != nil {
+	if _, err := repo.Update(ctx, u); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	got, _ := repo.GetByID(ctx, u.ID)
@@ -153,7 +153,7 @@ func TestGormRepository_UpdateFields(t *testing.T) {
 	u := &testUser{Name: "eve", Age: 30, Email: "e@e.com"}
 	_ = repo.Create(ctx, u)
 
-	if err := repo.UpdateFields(ctx, u.ID, map[string]any{"age": 31}); err != nil {
+	if _, err := repo.UpdateFields(ctx, u.ID, map[string]any{"age": 31}); err != nil {
 		t.Fatalf("UpdateFields: %v", err)
 	}
 	got, _ := repo.GetByID(ctx, u.ID)
@@ -170,7 +170,7 @@ func TestGormRepository_Delete(t *testing.T) {
 	u := &testUser{Name: "frank", Age: 40, Email: "f@e.com"}
 	_ = repo.Create(ctx, u)
 
-	if err := repo.Delete(ctx, u.ID); err != nil {
+	if _, err := repo.Delete(ctx, u.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if _, err := repo.GetByID(ctx, u.ID); err == nil {
@@ -208,12 +208,121 @@ func TestGormRepository_BatchDelete(t *testing.T) {
 		ids = append(ids, u.ID)
 	}
 
-	if err := repo.BatchDelete(ctx, ids); err != nil {
+	if _, err := repo.BatchDelete(ctx, ids); err != nil {
 		t.Fatalf("BatchDelete: %v", err)
 	}
 	_, total, _ := repo.List(ctx, nil)
 	if total != 0 {
 		t.Errorf("expected 0 after batch delete, got %d", total)
+	}
+}
+
+// TestGormRepository_Write_RowsAffected（#60）：写方法回传受影响行数，
+// 「记录不存在」（0 行）与实际改动（>0）在仓储层可区分——found 标志语义
+// 由调用方按行数构造（如 zeus rpchandler rows>0 → found）。
+func TestGormRepository_Write_RowsAffected(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewGormRepository[testUser, int64](db)
+	ctx := context.Background()
+
+	u := &testUser{Name: "rows", Age: 1, Email: "r@e.com"}
+	if err := repo.Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := repo.Update(ctx, u)
+	if err != nil {
+		t.Fatalf("Update existing: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("Update existing rows=%d, want 1", rows)
+	}
+
+	rows, err = repo.Update(ctx, &testUser{ID: 99999, Name: "ghost"})
+	if err != nil {
+		t.Fatalf("Update missing: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("Update missing rows=%d, want 0", rows)
+	}
+
+	rows, err = repo.UpdateFields(ctx, u.ID, map[string]any{"name": "rows-2"})
+	if err != nil {
+		t.Fatalf("UpdateFields existing: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("UpdateFields existing rows=%d, want 1", rows)
+	}
+
+	rows, err = repo.UpdateFields(ctx, 99999, map[string]any{"name": "ghost"})
+	if err != nil {
+		t.Fatalf("UpdateFields missing: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("UpdateFields missing rows=%d, want 0", rows)
+	}
+
+	rows, err = repo.Delete(ctx, 99999)
+	if err != nil {
+		t.Fatalf("Delete missing: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("Delete missing rows=%d, want 0", rows)
+	}
+
+	rows, err = repo.Delete(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("Delete existing: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("Delete existing rows=%d, want 1", rows)
+	}
+}
+
+// TestGormRepository_Update_Columns（#61）：UpdateOption{Columns} 列白名单
+// ——immutable 列保护：白名单外的列即使传入实体携带差异也不落库；
+// 缺省维持全字段覆写（含零值列写穿，Select("*") 语义）。
+func TestGormRepository_Update_Columns(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewGormRepository[testUser, int64](db)
+	ctx := context.Background()
+
+	u := &testUser{Name: "imm", Age: 30, Email: "i@e.com"}
+	if err := repo.Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+
+	// 白名单只写 name：age/email 是 immutable 列，携带差异也不落库
+	patch := &testUser{ID: u.ID, Name: "imm-2", Age: 99, Email: "evil@e.com"}
+	rows, err := repo.Update(ctx, patch, crud.UpdateOption{Columns: []string{"name"}})
+	if err != nil {
+		t.Fatalf("Update with columns: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("rows=%d, want 1", rows)
+	}
+	got, err := repo.GetByID(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "imm-2" {
+		t.Errorf("白名单内 name 应更新，got %q", got.Name)
+	}
+	if got.Age != 30 || got.Email != "i@e.com" {
+		t.Errorf("白名单外的列不得覆写，got age=%d email=%q", got.Age, got.Email)
+	}
+
+	// 负例：缺省全字段覆写（白名单外的列也写、零值列写穿）
+	zero := &testUser{ID: u.ID, Name: "imm-3", Age: 0, Email: ""}
+	if rows, updErr := repo.Update(ctx, zero); updErr != nil || rows != 1 {
+		t.Fatalf("Update full: rows=%d err=%v", rows, updErr)
+	}
+	got, err = repo.GetByID(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "imm-3" || got.Age != 0 || got.Email != "" {
+		t.Errorf("缺省应全字段覆写（含零值列），got %+v", got)
 	}
 }
 
@@ -395,7 +504,7 @@ func TestGormRepository_UpdateFields_NonIDPrimaryKey(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if err = repo.UpdateFields(ctx, e.UID, map[string]any{"name": "after"}); err != nil {
+	if _, err = repo.UpdateFields(ctx, e.UID, map[string]any{"name": "after"}); err != nil {
 		t.Fatalf("UpdateFields: %v", err)
 	}
 

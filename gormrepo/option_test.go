@@ -100,8 +100,12 @@ func TestQueryDecorator_UpdateByID_ScopeInjected(t *testing.T) {
 	ctx := withTenant(context.Background(), 1)
 
 	// 越权 UpdateFields：0 行受影响（GORM 不报错），行内容不变
-	if err := repo.UpdateFields(ctx, id2, map[string]any{"name": "hacked"}); err != nil {
+	rows, err := repo.UpdateFields(ctx, id2, map[string]any{"name": "hacked"})
+	if err != nil {
 		t.Fatalf("UpdateFields cross-tenant: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("越权 UpdateFields 应 0 行受影响，got %d", rows)
 	}
 	var row tenantUser
 	if err := db.First(&row, id2).Error; err != nil {
@@ -114,7 +118,7 @@ func TestQueryDecorator_UpdateByID_ScopeInjected(t *testing.T) {
 	// 越权 Update：scope 限制下不得命中他行（不用 Save——Save 的 upsert
 	// 回退会绕过 scope，见 Update godoc）
 	other := &tenantUser{ID: id2, Name: "hacked", TenantID: 2}
-	if err := repo.Update(ctx, other); err != nil {
+	if _, err := repo.Update(ctx, other); err != nil {
 		t.Fatalf("Update cross-tenant: %v", err)
 	}
 	// 用全新 dest：GORM First 会沿用 dest 已有主键
@@ -127,7 +131,7 @@ func TestQueryDecorator_UpdateByID_ScopeInjected(t *testing.T) {
 	}
 
 	// 自己租户 UpdateFields 成功
-	if err := repo.UpdateFields(ctx, id1, map[string]any{"name": "alice2"}); err != nil {
+	if _, err := repo.UpdateFields(ctx, id1, map[string]any{"name": "alice2"}); err != nil {
 		t.Fatalf("UpdateFields own: %v", err)
 	}
 	row = tenantUser{}
@@ -146,7 +150,7 @@ func TestQueryDecorator_DeleteByID_ScopeInjected(t *testing.T) {
 	repo := NewGormRepository[tenantUser, int64](db, WithQueryDecorator[tenantUser](tenantDecorator))
 	ctx := withTenant(context.Background(), 1)
 
-	if err := repo.Delete(ctx, id2); err != nil {
+	if _, err := repo.Delete(ctx, id2); err != nil {
 		t.Fatalf("Delete cross-tenant: %v", err)
 	}
 	var count int64
@@ -157,7 +161,7 @@ func TestQueryDecorator_DeleteByID_ScopeInjected(t *testing.T) {
 		t.Fatal("越权 Delete 不得删他行")
 	}
 
-	if err := repo.Delete(ctx, id1); err != nil {
+	if _, err := repo.Delete(ctx, id1); err != nil {
 		t.Fatalf("Delete own: %v", err)
 	}
 	if err := db.Model(&tenantUser{}).Where("id = ?", id1).Count(&count).Error; err != nil {
@@ -253,7 +257,7 @@ func TestScopeRequired_NoDecorator_Errors(t *testing.T) {
 	if _, err := repo.Count(ctx, nil); err == nil {
 		t.Fatal("Count 应报错")
 	}
-	if err := repo.Delete(ctx, id1); err == nil {
+	if _, err := repo.Delete(ctx, id1); err == nil {
 		t.Fatal("Delete 应报错")
 	}
 }
@@ -320,10 +324,11 @@ func TestQueryDecorator_RunInTx(t *testing.T) {
 			}
 		}
 		// 事务内写他行：被 scope 挡（0 行）
-		if err := txRepo.UpdateFields(ctx, id2, map[string]any{"name": "hacked"}); err != nil {
+		if _, err := txRepo.UpdateFields(ctx, id2, map[string]any{"name": "hacked"}); err != nil {
 			return err
 		}
-		return txRepo.UpdateFields(ctx, id1, map[string]any{"name": "in-tx"})
+		_, err := txRepo.UpdateFields(ctx, id1, map[string]any{"name": "in-tx"})
+		return err
 	})
 	if err != nil {
 		t.Fatalf("RunInTx: %v", err)

@@ -476,6 +476,93 @@ func TestBaseService_Delete_AfterDeleteError(t *testing.T) {
 	}
 }
 
+// TestBaseService_Delete_NotFound（#60）：记录不存在 → not-found（默认 404），
+// 不再静默成功；afterDelete 只在实际删除后执行。
+func TestBaseService_Delete_NotFound(t *testing.T) {
+	db := setupServiceTestDB(t)
+	repo := NewGormRepository[testUser, int64](db)
+	afterRan := false
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
+		SetAfterDelete(func(_ context.Context, _ int64) error {
+			afterRan = true
+			return nil
+		})
+
+	err := svc.Delete(context.Background(), 9999)
+	if err == nil {
+		t.Fatal("expected not-found error for missing id, got nil（负例：不再静默成功）")
+	}
+	var be *bizerrors.BizError
+	if !errors.As(err, &be) {
+		t.Fatalf("expected *BizError, got %T: %v", err, err)
+	}
+	if be.BizCode != 404 {
+		t.Errorf("expected BizCode 404, got %d", be.BizCode)
+	}
+	if !errors.Is(err, crud.ErrNotFound) {
+		t.Errorf("not-found 链应保留 crud.ErrNotFound，got %v", err)
+	}
+	if afterRan {
+		t.Error("afterDelete 不应在删除 0 行时执行")
+	}
+}
+
+// TestBaseService_Update_ImmutableColumns（#61）：SetUpdateColumns 列白名单
+// 透传 repo.Update——updateEntity 改到的 immutable 列（email）不落库。
+func TestBaseService_Update_ImmutableColumns(t *testing.T) {
+	db := setupServiceTestDB(t)
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
+		SetToEntity(func(r *userCreateReq) *testUser {
+			return &testUser{Name: r.Name, Age: r.Age, Email: r.Email}
+		}).
+		SetUpdateEntity(func(e *testUser, r *userUpdateReq) {
+			e.Name = r.Name
+			e.Email = r.Email // email immutable：写入时被白名单挡下
+		}).
+		SetUpdateColumns("name")
+
+	created, err := svc.Create(context.Background(), &userCreateReq{Name: "alice", Age: 20, Email: "a@e.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := svc.Update(context.Background(), created.ID, &userUpdateReq{Name: "alice-2", Email: "evil@e.com"})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.Name != "alice-2" {
+		t.Errorf("白名单内 name 应更新，got %q", updated.Name)
+	}
+
+	got, err := svc.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Email != "a@e.com" {
+		t.Errorf("immutable 列 email 不得覆写，got %q", got.Email)
+	}
+}
+
+// TestBaseService_WithNotFoundErr_Integration（#62）：消费方码表（40401 类）
+// 经 WithNotFoundErr 直通，不再需要逐处哨兵/错误码翻译。
+func TestBaseService_WithNotFoundErr_Integration(t *testing.T) {
+	db := setupServiceTestDB(t)
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo,
+		crud.WithNotFoundErr(bizerrors.NewBizErrorWithStatus(40401, 404, "user not found")),
+	)
+
+	_, err := svc.Get(context.Background(), 9999)
+	var be *bizerrors.BizError
+	if !errors.As(err, &be) {
+		t.Fatalf("expected *BizError, got %T: %v", err, err)
+	}
+	if be.BizCode != 40401 {
+		t.Errorf("expected BizCode 40401（消费方码表），got %d", be.BizCode)
+	}
+}
+
 // --- Repository: PaginateList (package-level helper) ---
 
 // TestPaginateList_HappyPath covers the package-level PaginateList
