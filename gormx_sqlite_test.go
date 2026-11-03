@@ -3,6 +3,7 @@ package gormx
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,11 +83,37 @@ func TestFilterBuilder_Clauses(t *testing.T) {
 	fb.Add(true, "age > ?", 18)
 
 	sql, args := fb.Clauses()
-	if sql != "name = ? AND age > ?" {
+	if sql != "(name = ?) AND (age > ?)" {
 		t.Errorf("expected joined SQL, got %q", sql)
 	}
 	if len(args) != 2 {
 		t.Errorf("expected 2 args, got %d", len(args))
+	}
+}
+
+// TestFilterBuilder_OrFragment_AutoParenthesized 回归测试（#63）：AND 链里
+// 含 OR 的片段必须自动带括号 —— 未加括号时 SQL 优先级把过滤击穿成
+// (... AND a) OR b，OR 右侧绕过之前所有 AND 过滤（fail-open 静默漏数据）。
+func TestFilterBuilder_OrFragment_AutoParenthesized(t *testing.T) {
+	db := newTestDB(t)
+	fb := NewFilterBuilder().
+		Add(true, "registrar_account_id = ?", 7).
+		Add(true, "expire_date IS NULL OR expire_date > ?", "2030-01-01")
+
+	dry := db.Session(&gorm.Session{DryRun: true})
+	tx := fb.Apply(dry).Find(&[]TestBase{})
+	sql := tx.Statement.SQL.String()
+
+	// 正例：OR 片段被括号包住，参数绑定顺序不变
+	if !strings.Contains(sql, "(expire_date IS NULL OR expire_date > ?)") {
+		t.Errorf("OR 片段应自动带括号，got %q", sql)
+	}
+	// 负例：绝不允许出现被优先级击穿的裸形态（(... AND a) OR b）
+	if strings.Contains(sql, "AND expire_date IS NULL OR") {
+		t.Errorf("AND 链被 OR 优先级击穿（fail-open），got %q", sql)
+	}
+	if len(tx.Statement.Vars) != 2 || tx.Statement.Vars[0] != 7 || tx.Statement.Vars[1] != "2030-01-01" {
+		t.Errorf("参数绑定应保持不变，got %v", tx.Statement.Vars)
 	}
 }
 

@@ -62,6 +62,16 @@ repo := gormrepo.NewGormRepository[Project, int64](db,
   不丢 scope）
 - 默认无 decorator 即 passthrough：单租户服务零负担
 
+### 查询构造红线（FilterBuilder / crud.Query）
+
+- `FilterBuilder.Add` 与 `crud.Query.WhereRaw` 的片段**自动包一层括号**再进
+  AND 链（参数绑定不变）：片段内部含 OR 不会把过滤击穿成 `(... AND a) OR b`
+  ——忘写手括号不再是静默漏数据（fail-open）的方向。
+- OR 分组用 `crud.Query.WhereGroup` / `OrGroup` 显式声明（`A AND (B OR C)`）；
+  不分组的 `Or()` 仍是全局 OR（`(A AND B) OR C`），既有语义不变。
+- 操作符白名单含 `FIND_IN_SET`（`FIND_IN_SET(?, field) > 0`，逗号串列成员测试）；
+  白名单外操作符与非法值形状一律 fail-closed 渲染 `1=0`，绝不静默丢弃条件。
+
 ### 写语义（RowsAffected / found）与错误映射
 
 写方法回传受影响行数（0 = 记录不存在，>0 = 实际改动），found 标志可按行数

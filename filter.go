@@ -27,9 +27,14 @@ func NewFilterBuilder() *FilterBuilder {
 }
 
 // Add 条件为 true 时追加 WHERE 子句。
+//
+// 片段进入 AND 链时自动包一层括号（参数绑定不变）：片段内部含 OR 时不会因
+// SQL 优先级把整条 AND 链击穿成 (... AND a) OR b —— 未加括号的 OR 右侧会
+// 绕过之前所有 AND 过滤，静默返回不该返回的行（fail-open 漏数据）。
+// 自动括号后忘写手括号不再是错误方向的安全缺口。
 func (fb *FilterBuilder) Add(ok bool, sql string, args ...any) *FilterBuilder {
 	if ok {
-		fb.clauses = append(fb.clauses, clause{sql: sql, args: args})
+		fb.clauses = append(fb.clauses, clause{sql: "(" + sql + ")", args: args})
 	}
 	return fb
 }
@@ -49,6 +54,7 @@ func (fb *FilterBuilder) IsEmpty() bool {
 }
 
 // Clauses 返回合并后的子句字符串和参数（用于 raw SQL 场景）。
+// 每个片段自带括号（见 Add），合并结果形如 "(a) AND (b OR c)"。
 func (fb *FilterBuilder) Clauses() (string, []any) {
 	if len(fb.clauses) == 0 {
 		return "", nil

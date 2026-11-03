@@ -2,9 +2,11 @@ package gormrepo
 
 import (
 	"context"
+	"strings"
+	"testing"
 
 	"github.com/oekit/gormx/crud"
-	"testing"
+	"gorm.io/gorm"
 )
 
 // --- M5: BETWEEN 值形状宽容解析 + 操作符白名单 fail-closed ---
@@ -255,5 +257,152 @@ func TestQuery_NotIn_TwoVariadicValues(t *testing.T) {
 	}
 	if total != 1 || len(list) != 1 || list[0].Name != "b" {
 		t.Errorf("expected only b, got total=%d list=%v", total, list)
+	}
+}
+
+// --- G: OR 分组 / FIND_IN_SET / WhereRaw（#63 #64）---
+
+// seedGroupFixture 插入越权判别数据集：x/y 同属账户 7，y 在账户 9 的同名行
+// 是「OR 右侧绕过 AND 过滤」时会漏出来的越权行。
+func seedGroupFixture(t *testing.T, repo *GormRepository[testUser, int64]) {
+	t.Helper()
+	ctx := context.Background()
+	_ = repo.Create(ctx, &testUser{Name: "x", Age: 7}) // 账户 7，命中 B
+	_ = repo.Create(ctx, &testUser{Name: "y", Age: 7}) // 账户 7，命中 C
+	_ = repo.Create(ctx, &testUser{Name: "y", Age: 9}) // 其它账户仅命中 C —— 不得出现
+}
+
+// TestQuery_WhereGroup_A_And_OrGroup 回归测试（#63 #64）：A AND (B OR C)
+// 只返回分组命中的行 —— OR 右侧不得绕过 AND 过滤（越权行必须被滤掉）。
+func TestQuery_WhereGroup_A_And_OrGroup(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewGormRepository[testUser, int64](db)
+	seedGroupFixture(t, repo)
+
+	q := crud.NewQuery().
+		Where("age", "=", 7).
+		WhereGroup(func(g *crud.Query) *crud.Query {
+			return g.Or("name", "=", "x").Or("name", "=", "y")
+		})
+
+	list, total, err := repo.List(context.Background(), q)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if total != 2 || len(list) != 2 {
+		t.Fatalf("expected 2 rows, got total=%d list=%v", total, list)
+	}
+	for _, u := range list {
+		if u.Age != 7 {
+			t.Errorf("越权行泄漏（OR 绕过 AND 过滤）：%+v", u)
+		}
+	}
+}
+
+// TestQuery_WhereRaw_MultiArgs 回归测试（#64）：WhereRaw 多占位符多参数绑定，
+// 片段自动括号后 OR 不击穿 AND 链（同一越权负例）。
+func TestQuery_WhereRaw_MultiArgs(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewGormRepository[testUser, int64](db)
+	seedGroupFixture(t, repo)
+
+	q := crud.NewQuery().
+		Where("age", "=", 7).
+		WhereRaw("name = ? OR name = ?", "x", "y")
+
+	list, total, err := repo.List(context.Background(), q)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if total != 2 || len(list) != 2 {
+		t.Fatalf("expected 2 rows, got total=%d list=%v", total, list)
+	}
+	for _, u := range list {
+		if u.Age != 7 {
+			t.Errorf("越权行泄漏（raw OR 绕过 AND 过滤）：%+v", u)
+		}
+	}
+}
+
+// TestQuery_Or_GlobalUnchanged 对照（#64 反面）：不带分组的 Or() 仍是全局
+// OR（(A AND B) OR C）—— 同一数据集上越权行会通过，差异只来自显式分组。
+func TestQuery_Or_GlobalUnchanged(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewGormRepository[testUser, int64](db)
+	seedGroupFixture(t, repo)
+
+	q := crud.NewQuery().
+		Where("age", "=", 7).
+		Where("name", "=", "x").
+		Or("name", "=", "y")
+
+	_, total, err := repo.List(context.Background(), q)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if total != 3 {
+		t.Errorf("全局 Or 契约应保持 (A AND B) OR C（3 行），got %d", total)
+	}
+}
+
+// TestQuery_OrGroup_RealSQL 回归测试（#64）：OrGroup 分组带括号进 OR 链
+// （A OR (B AND C)），组内 AND 不把 OR 链切开。
+func TestQuery_OrGroup_RealSQL(t *testing.T) {
+	db := setupTestDB(t)
+	dry := db.Session(&gorm.Session{DryRun: true})
+	q := crud.NewQuery().
+		Where("age", "=", 7).
+		OrGroup(func(g *crud.Query) *crud.Query {
+			return g.Where("name", "=", "x").Where("name", "=", "y")
+		})
+
+	sql := ApplyQuery(dry, q).Find(&[]testUser{}).Statement.SQL.String()
+	if !strings.Contains(sql, "(name = ? AND name = ?)") {
+		t.Errorf("OrGroup 应渲染为带括号分组，got %q", sql)
+	}
+}
+
+// TestQuery_FindInSet_RealSQL 回归测试（#64）：FIND_IN_SET 进白名单后渲染
+// FIND_IN_SET(?, field) > 0、针值占位符绑定（sqlite 无 FIND_IN_SET 函数，
+// 只做真实 SQL 字符串 + 绑定断言）。
+func TestQuery_FindInSet_RealSQL(t *testing.T) {
+	db := setupTestDB(t)
+	dry := db.Session(&gorm.Session{DryRun: true})
+	tx := ApplyQuery(dry, crud.NewQuery().Where("tags", "FIND_IN_SET", "go")).Find(&[]testUser{})
+
+	sql := tx.Statement.SQL.String()
+	if !strings.Contains(sql, "FIND_IN_SET(?, tags) > 0") {
+		t.Errorf("expected FIND_IN_SET(?, tags) > 0, got %q", sql)
+	}
+	if len(tx.Statement.Vars) != 1 || tx.Statement.Vars[0] != "go" {
+		t.Errorf("needle binding = %v", tx.Statement.Vars)
+	}
+}
+
+// TestQuery_FindInSet_BadShape_RealSQL_FailClosed（#64 反例）：针值形状非法
+// （缺失/多值/切片）与拼错的操作符在真实 SQL 里渲染 1=0，白名单不放行任意片段。
+func TestQuery_FindInSet_BadShape_RealSQL_FailClosed(t *testing.T) {
+	db := setupTestDB(t)
+	cases := []struct {
+		name  string
+		op    string
+		value []any
+	}{
+		{"missing needle", "FIND_IN_SET", nil},
+		{"multi needle", "FIND_IN_SET", []any{"a", "b"}},
+		{"slice needle", "FIND_IN_SET", []any{[]string{"a"}}},
+		{"typo op", "FIND_IN_SETS", []any{"a"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dry := db.Session(&gorm.Session{DryRun: true})
+			sql := ApplyQuery(dry, crud.NewQuery().Where("tags", tc.op, tc.value...)).Find(&[]testUser{}).Statement.SQL.String()
+			if !strings.Contains(sql, "1=0") {
+				t.Errorf("expected fail-closed 1=0, got %q", sql)
+			}
+			if strings.Contains(sql, "FIND_IN_SET(") {
+				t.Errorf("fail-closed 条件不得拼入 FIND_IN_SET，got %q", sql)
+			}
+		})
 	}
 }

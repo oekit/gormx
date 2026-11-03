@@ -79,3 +79,143 @@ func TestQuerySpec_SnapshotIsolation(t *testing.T) {
 		t.Errorf("query should have 2 conds after chained Where")
 	}
 }
+
+// TestQuerySpec_WhereGroup_Parenthesized 回归测试（#64）：OR 分组渲染为单个
+// 带括号条件（A AND (B OR C)），组内 OR 不击穿链上其它 AND 过滤。
+func TestQuerySpec_WhereGroup_Parenthesized(t *testing.T) {
+	q := NewQuery().
+		Where("account_id", "=", 7).
+		WhereGroup(func(g *Query) *Query {
+			return g.Where("status", "=", "ok").Or("name", "LIKE", "%x%")
+		})
+
+	spec := q.Spec()
+	if len(spec.Conds) != 2 {
+		t.Fatalf("expected 2 conds, got %d", len(spec.Conds))
+	}
+	got := spec.Conds[1]
+	if got.Query != "(status = ? OR name LIKE ?)" {
+		t.Errorf("group cond = %q, want (status = ? OR name LIKE ?)", got.Query)
+	}
+	if len(got.Args) != 2 || got.Args[0] != "ok" || got.Args[1] != "%x%" {
+		t.Errorf("group args = %v", got.Args)
+	}
+}
+
+// TestQuerySpec_OrGroup_Parenthesized（#64）：OR 分支上的括号分组
+// （A OR (B AND C)），分组整体作为一个 OR 分支。
+func TestQuerySpec_OrGroup_Parenthesized(t *testing.T) {
+	q := NewQuery().
+		Where("account_id", "=", 7).
+		OrGroup(func(g *Query) *Query {
+			return g.Where("status", "=", "ok").Where("name", "LIKE", "%x%")
+		})
+
+	spec := q.Spec()
+	if len(spec.OrConds) != 1 {
+		t.Fatalf("expected 1 or-cond, got %d", len(spec.OrConds))
+	}
+	if got := spec.OrConds[0]; got.Query != "(status = ? AND name LIKE ?)" {
+		t.Errorf("or-group cond = %q, want (status = ? AND name LIKE ?)", got.Query)
+	}
+}
+
+// TestQuerySpec_Or_GlobalUnchanged 对照（#64 反面）：不分组的 Or() 仍是全局
+// OR 语义（(A AND B) OR C）——既有契约不变，分组是显式 opt-in。
+func TestQuerySpec_Or_GlobalUnchanged(t *testing.T) {
+	spec := NewQuery().Where("a", "=", 1).Where("b", "=", 2).Or("c", "=", 3).Spec()
+	if len(spec.Conds) != 2 || len(spec.OrConds) != 1 {
+		t.Fatalf("global Or 形态应保持不变，conds=%d orConds=%d", len(spec.Conds), len(spec.OrConds))
+	}
+	if spec.OrConds[0].Query != "c = ?" {
+		t.Errorf("or cond = %q", spec.OrConds[0].Query)
+	}
+}
+
+// TestQuerySpec_Group_FailClosedAndNesting（#64 反面）：组内未知操作符仍
+// fail-closed 渲染 1=0（分组不放行坏条件）；嵌套分组继续带括号。
+func TestQuerySpec_Group_FailClosedAndNesting(t *testing.T) {
+	q := NewQuery().WhereGroup(func(g *Query) *Query {
+		return g.Where("age", "REGEXP", ".*").OrGroup(func(inner *Query) *Query {
+			return inner.Where("name", "=", "x")
+		})
+	})
+	got := q.Spec().Conds[0]
+	if got.Query != "(1=0 OR (name = ?))" {
+		t.Errorf("group cond = %q, want (1=0 OR (name = ?))", got.Query)
+	}
+}
+
+// TestQuerySpec_EmptyGroup_Noop 空组是 no-op（与条件为 false 时跳过的语义
+// 一致），不凭空追加恒假条件。
+func TestQuerySpec_EmptyGroup_Noop(t *testing.T) {
+	q := NewQuery().Where("a", "=", 1).WhereGroup(func(g *Query) *Query { return g })
+	if spec := q.Spec(); len(spec.Conds) != 1 {
+		t.Errorf("empty group should add no cond, got %+v", spec.Conds)
+	}
+}
+
+// TestQuerySpec_FindInSet（#64 正例）：白名单收录 FIND_IN_SET，形态
+// FIND_IN_SET(?, field) > 0（针值在前、列在后），针值占位符绑定。
+func TestQuerySpec_FindInSet(t *testing.T) {
+	got := NewQuery().Where("tags", "FIND_IN_SET", "go").Spec().Conds[0]
+	if got.Query != "FIND_IN_SET(?, tags) > 0" {
+		t.Errorf("cond = %q, want FIND_IN_SET(?, tags) > 0", got.Query)
+	}
+	if len(got.Args) != 1 || got.Args[0] != "go" {
+		t.Errorf("needle binding = %v", got.Args)
+	}
+}
+
+// TestQuerySpec_FindInSet_BadShape_FailClosed（#64 反例）：针值形状非法
+// （缺失/多值/切片/nil）与拼错的操作符一律 fail-closed 渲染 1=0 ——
+// 白名单新增操作符绝不放行任意片段，也不重复 IN 多值被静默截断的旧错。
+func TestQuerySpec_FindInSet_BadShape_FailClosed(t *testing.T) {
+	cases := []struct {
+		name  string
+		op    string
+		value []any
+	}{
+		{"missing needle", "FIND_IN_SET", nil},
+		{"multi needle", "FIND_IN_SET", []any{"a", "b"}},
+		{"slice needle", "FIND_IN_SET", []any{[]string{"a"}}},
+		{"nil needle", "FIND_IN_SET", []any{nil}},
+		{"typo op", "FIND_IN_SETS", []any{"a"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NewQuery().Where("tags", tc.op, tc.value...).Spec().Conds[0]
+			if got.Query != failClosedCondition {
+				t.Errorf("cond = %q, want %s", got.Query, failClosedCondition)
+			}
+			if len(got.Args) != 0 {
+				t.Errorf("fail-closed cond should carry no args, got %v", got.Args)
+			}
+		})
+	}
+}
+
+// TestQuerySpec_WhereRaw（#64 正例）：显式 raw 入口多占位符多参数绑定，
+// 片段自动带括号（与 FilterBuilder.Add 同一防击穿机制）。
+func TestQuerySpec_WhereRaw(t *testing.T) {
+	q := NewQuery().
+		Where("account_id", "=", 7).
+		WhereRaw("expire_date IS NULL OR expire_date > ?", "2030-01-01")
+
+	got := q.Spec().Conds[1]
+	if got.Query != "(expire_date IS NULL OR expire_date > ?)" {
+		t.Errorf("raw cond = %q, want auto-parenthesized", got.Query)
+	}
+	if len(got.Args) != 1 || got.Args[0] != "2030-01-01" {
+		t.Errorf("raw args = %v", got.Args)
+	}
+}
+
+// TestQuerySpec_WhereRaw_Empty_FailClosed（#64 反例）：空 raw 片段无法解析，
+// fail-closed 渲染 1=0，绝不静默丢弃。
+func TestQuerySpec_WhereRaw_Empty_FailClosed(t *testing.T) {
+	got := NewQuery().WhereRaw("  ").Spec().Conds[0]
+	if got.Query != failClosedCondition {
+		t.Errorf("cond = %q, want %s", got.Query, failClosedCondition)
+	}
+}
