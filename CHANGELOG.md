@@ -2,6 +2,13 @@
 
 所有 notable 变更记录如下。格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [v0.7.0] — 2026-11-03
+
+- feat(crud)!: Writer 写方法回传 RowsAffected + UpdateOption 列白名单（immutable 列保护）+ ErrMapper 错误出口可映射消费方码表（#60 #61 #62）
+- ⚠️ breaking：crud.Writer 四个写方法签名加 (int64, error)；BaseService.Delete 缺失记录由静默成功改 404
+
+关联问题单：gormx#60、gormx#61、gormx#62。
+
 ## [v0.6.6] — 2026-11-02
 
 - build: 矩阵内依赖地板 `pkg` v0.31.0 → v0.31.1（维护轮全量对齐；本版不含 API 变更）
