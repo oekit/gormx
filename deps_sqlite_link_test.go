@@ -101,7 +101,7 @@ func parseImports(t *testing.T, path string) []string {
 	if err != nil {
 		t.Fatalf("解析 %s: %v", path, err)
 	}
-	var out []string
+	out := make([]string, 0, len(f.Imports))
 	for _, imp := range f.Imports {
 		out = append(out, strings.Trim(imp.Path.Value, "\""))
 	}
