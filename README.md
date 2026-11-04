@@ -93,24 +93,27 @@ svc := crud.NewBaseService[Project, int64, CreateReq, UpdateReq](repo,
 
 ## SQLite 驱动与 cgo
 
+- **核心包零 sqlite 链接（v0.8.0 起，#72）**：纯 Go sqlite 入口只住
+  **`gormx/sqlitedrv` 子包**——根包、`crud/`、`gormrepo/` 的生产代码不 import
+  任何 sqlite 驱动（`deps_sqlite_link_test.go` 以 AST 判 import 钉住）。
+  只用 MySQL/CRUD/事务的消费方**不再被迫带上 glebarez 及其驱动注册副作用**，
+  也不再付它的构建成本（此前实测冷构建 +5s，`modernc.org/libc` 体量大）。
+- **想要纯 Go SQLite**：显式 import `github.com/oekit/gormx/sqlitedrv`，
+  用 `sqlitedrv.Open(dsn, opts...)`（迁移别名 `sqlitedrv.OpenPureGoSQLite` 同签名）；
+  已有 `*sql.DB` 时用 `sqlite.Dialector{Conn: db}`。
+  ⚠️ breaking：`gormx.OpenPureGoSQLite`（根包入口）v0.8.0 起不复存在。
 - **只用 gormx 不会引入 cgo**：生产代码**不依赖任何 CGO 驱动**——
   MySQL 走 `gorm.io/driver/mysql`（纯 Go），SQLite 走
   [glebarez/sqlite](https://github.com/glebarez/sqlite)（modernc 系，纯 Go）。
   ⇒ 本仓与消费方都能 `CGO_ENABLED=0` 构建/测试；`gorm.io/driver/sqlite`
   （CGO 实现，mattn/go-sqlite3）**已不再被本仓任何代码引用**。
-- **依赖面与构建成本（2026-10-28 澄清，#41）**：根包的 sqlite 入口
-  `OpenPureGoSQLite` 需要纯 Go 驱动 ⇒ 它的传递依赖（`modernc.org/sqlite`
-  → `modernc.org/libc`）**会进每个消费方的构建**。实测**冷构建 +5s**
-  （`modernc.org/libc` 体量大）；只编 `gorm.io/gorm` 的话是 0.14s。
-  ⇒ 只需要 MySQL 的消费方也会付这份成本（增量的后续构建有缓存，摊薄明显）。
-- **想要纯 Go SQLite**：用 `gormx.OpenPureGoSQLite(dsn, opts...)`；
-  已有 `*sql.DB` 时用 `sqlite.Dialector{Conn: db}`。
-- **⚠️ 驱动名冲突，运行时才炸**：`modernc.org/sqlite` 与 `glebarez/go-sqlite`
+- **⚠️ 驱动名冲突，运行时才炸（选用 sqlitedrv 的消费方仍须知）**：
+  `modernc.org/sqlite` 与 `glebarez/go-sqlite`
   （glebarez dialector 的底层）都在 `init()` 里注册名为 `"sqlite"` 的驱动，
   **同时引入两者启动即 panic**（`sql: Register called twice for driver sqlite`）。
-  典型踩法：自己 `import _ "modernc.org/sqlite"` 又引 glebarez dialector。
-  注册者必须唯一——用 glebarez 就不要再直接 import modernc。mattn 系
-  （`gorm.io/driver/sqlite`）注册的是 `"sqlite3"`，与两者不冲突。
+  v0.8.0 起本仓不再替消费方做这个注册——**只有显式 import sqlitedrv 的二进制**
+  才带上 glebarez 的注册；此时注册者必须唯一，不要再直接 import modernc。
+  mattn 系（`gorm.io/driver/sqlite`）注册的是 `"sqlite3"`，与两者不冲突。
 
 ## 边界
 
