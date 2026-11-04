@@ -78,7 +78,7 @@ func TestNoDirectCGOSQLiteDependency(t *testing.T) {
 				if strings.Contains(line, dep) {
 					t.Errorf("%s 的 require 段直接依赖了 CGO sqlite 驱动 %q"+
 						"——本仓口径是 sqlite 走纯 Go 驱动（github.com/glebarez/sqlite，"+
-						"入口见 OpenPureGoSQLite）", rel, dep)
+						"入口见 sqlitedrv.OpenPureGoSQLite，#72 起只住 sqlitedrv 子包）", rel, dep)
 				}
 			}
 		}

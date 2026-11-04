@@ -2,6 +2,36 @@
 
 所有 notable 变更记录如下。格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [v0.8.0] — 2026-11-04
+
+- fix(sqlite)!: 纯 Go sqlite 入口移出根包，新增 `gormx/sqlitedrv` 子包（#72）——
+  根包 `gormx`、`crud/`、`gormrepo/` 生产代码**零 sqlite 驱动链接**
+- ⚠️ breaking：`gormx.OpenPureGoSQLite`（根包入口）移除。迁移：改 import
+  `github.com/oekit/gormx/sqlitedrv`，调用 `sqlitedrv.Open(dsn, opts...)`
+  （迁移别名 `sqlitedrv.OpenPureGoSQLite` 同签名，可只改 import 路径）
+
+**根因**：glebarez 系（`github.com/glebarez/go-sqlite`）与 `modernc.org/sqlite`
+都在 `init()` 里 `sql.Register("sqlite", ...)` ⇒ 同一二进制链接两者启动即
+`panic: sql: Register called twice for driver "sqlite"`。旧入口住根包 ⇒
+只要用 gormx（哪怕只用 MySQL/CRUD/事务）就带上 glebarez 的注册副作用，
+与任何直接使用 `modernc.org/sqlite` 的库（agent-memory 等）组合启动即炸
+（消费方实证：code-review-service）。
+
+**判据**（可执行契约，非文档承诺）：
+
+- `deps_sqlite_link_test.go`：AST 静态断言核心包生产代码零 sqlite 驱动
+  import（含正对照——sqlitedrv 确实接线 glebarez，防门禁空转）；
+- `sqlite_conflict_repro_test.go`：炸点复现对——正对照「根包 + modernc
+  干净启动」（修复前真红）、负对照「sqlitedrv + modernc 仍 panic」（边界
+  如实固化：驱动注册副作用是上游行为，显式 import sqlitedrv 的二进制
+  不得再直接 import modernc）；
+- 两项判据均经变异自证：根包混入 glebarez ⇒ 门禁与复现正对照精确转红。
+
+**边界**：`sqlitedrv` 与 `modernc.org/sqlite` 仍不可同二进制共存（详见
+包文档）；mattn 系（`gorm.io/driver/sqlite`）注册 "sqlite3" 不受影响。
+
+关联问题单：gormx#72。
+
 ## [v0.7.1] — 2026-11-03
 
 - 修 FilterBuilder.Add OR 片段自动加括号，消灭 `(... AND a) OR b` 击穿组合条件（#63）
