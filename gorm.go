@@ -30,11 +30,16 @@ func WithGormOptions(opts ...gorm.Option) OpenOption {
 	}
 }
 
-// WithConnectionPool 配置连接池参数（避免 OpenWithPool 的位置参数易错问题）。
-func WithConnectionPool(maxIdleConns, maxOpenConns int, connMaxLifetime time.Duration) OpenOption {
+// WithConnectionPool 配置连接池参数。
+//
+// ⚠️ 参数顺序与 database/sql 习惯对齐（#76）：**maxOpen 在前**，同
+// SetMaxOpenConns / SetMaxIdleConns 的声明次序（db 主资源在先、池缓存次之）。
+// v0.8.0 及以前是 idle 在前——传反不报错、只会静默把 MaxOpenConns 设成 idle 值
+// （idle > open 的组合 database/sql 不报错，行为是 idle 永远达不成）。
+func WithConnectionPool(maxOpenConns, maxIdleConns int, connMaxLifetime time.Duration) OpenOption {
 	return func(c *openConfig) {
-		c.maxIdleConns = maxIdleConns
 		c.maxOpenConns = maxOpenConns
+		c.maxIdleConns = maxIdleConns
 		c.connLifetime = connMaxLifetime
 		c.configurePool = true
 	}
@@ -56,11 +61,14 @@ func WithConnMaxIdleTime(d time.Duration) OpenOption {
 //   - 零 tracing 注入：需要 SQL Span 经 github.com/oekit/tracing/gormotel
 //     显式挂载
 //
-// 可通过选项配置连接池等：
+// ⚠️ 连接池配置是 **opt-in**（#75）：不传 WithConnectionPool ⇒ MaxOpenConns=0
+// （database/sql 缺省，**无上限**）——多副本部署下必然打满 PG max_connections
+// （too many clients）。Open 对「MaxOpenConns 未设上限」的形态打一条 WARN；
+// 生产部署必须显式配置：
 //
 //	db, err := gormx.Open(
 //	    mysql.Open(dsn),
-//	    gormx.WithConnectionPool(10, 100, time.Hour),
+//	    gormx.WithConnectionPool(100, 10, time.Hour), // maxOpen 在前（#76）
 //	)
 //
 // 需要 OTel 追踪时（装饰器显式接入，无 SDK 时 noop）：
@@ -101,6 +109,15 @@ func Open(dialector gorm.Dialector, opts ...OpenOption) (*gorm.DB, error) {
 		if cfg.connIdleTime > 0 {
 			sqlDB.SetConnMaxIdleTime(cfg.connIdleTime)
 		}
+	}
+
+	// 连接池静默退化守卫（#75）：池配置是 opt-in，不传 WithConnectionPool（或
+	// 只传 WithConnMaxIdleTime）⇒ MaxOpenConns=0 无上限——「配置能力藏在库深处
+	// =没人知道它是什么、也就没人能发现它没生效」，出事形态是生产事故
+	// （多副本打满 PG max_connections）而非编译错误。WARN 不拦行为（单实例
+	// 开发/批处理场景可能确有意为之），把「没生效」变成可见事实。
+	if cfg.maxOpenConns <= 0 {
+		gormLog.Warn("连接池未设置 MaxOpenConns 上限：database/sql 缺省无上限，多副本部署下会打满 PG max_connections（too many clients）——生产部署建议显式 gormx.WithConnectionPool(maxOpen, maxIdle, lifetime)")
 	}
 
 	return db, nil

@@ -1,3 +1,11 @@
+## [v0.9.0] — 2026-11-05
+
+- **BREAKING** fix(pool): `WithConnectionPool` 参数顺序对齐 database/sql 习惯（[#76](https://github.com/oekit/gormx/issues/76)）——原签名 idle 在前，与 `SetMaxOpenConns`/`SetMaxIdleConns` 的声明次序相反；传反**不报错**，只会静默把 MaxOpenConns 设成 idle 值（idle > open 的组合 database/sql 不报错，行为是 idle 永远达不成——bianque 装配点实录：想要 open=50/idle=10 实际 open=10/idle=50，靠调用点逐参命名防复发是宿主自律不是库防线）。新签名 `(maxOpenConns, maxIdleConns int, connMaxLifetime time.Duration)`；仓内调用点随迁（`OpenMySQL` 按 MySQLConfig 字段名装配、语义不变），0.x 阶段 breaking 可接受，迁移行：交换前两个实参位置
+- fix(pool): 连接池 opt-in 静默退化守卫（[#75](https://github.com/oekit/gormx/issues/75)）——不传 `WithConnectionPool` ⇒ `MaxOpenConns=0`（database/sql 缺省无上限），多副本部署下必然打满 PG max_connections（bianque 上线首日事故实录：排查「连接数为什么不受控」才发现库内有配置能力、只是没被激活——「配置能力藏在库深处=没人知道它是什么、也就没人能发现它没生效」）。`Open` 对「MaxOpenConns 未设上限」的形态（含只传 WithConnMaxIdleTime 的部分配置）打一条 WARN（不拦行为——单实例开发/批处理可能确有意为之），Open 的 doc 顶部声明「池配置是 opt-in，不传=无上限，生产必须显式配置」
+- feat(sqlite): 新增 `IsBusyErr(err) bool` 类型化判定原语（[#77](https://github.com/oekit/gormx/issues/77)）——宿主（bianque 全仓 5 处）此前各自 `strings.Contains("database is locked")`：错误文本判定是系统性技术债，且**已经失效过一半**——modernc 系驱动的 busy 文案是 "The database file is locked (SQLITE_BUSY)"，不含经典 mattn 子串 "database is locked"，宿主的文本匹配在新驱动下本就拦不住 BUSY。判定面单源在本库：①类型化路径（主）——modernc.org/sqlite 的 `*sqlite.Error` 实现 `Code() int`，SQLITE_BUSY=5/SQLITE_LOCKED=6，以**局部接口**断言而非 import 驱动包（根包零 sqlite 驱动链接的 #72 门禁不被破坏），码命中后仍要求文案带 SQLITE_BUSY/SQLITE_LOCKED 标记（防其他库同名 `Code()` 误报）；②文本兜底——经典 mattn 文案（大小写不敏感）。沿 errors 链遍历（gorm/驱动包装层透明）。补**真 busy 集成用例**（两条连接写同一文件库、A 持 IMMEDIATE 锁 B 立撞 BUSY——闭合「宿主无法在单测里构造真 busy」的等价性验证缺口；注：memory+cache=shared 模式构造不出——glebarez 驱动对 SQLITE_LOCKED_SHAREDCACHE 走 unlock_notify 内部无限等待，锁等待被驱动吞掉）
+
+关联问题单：gormx#75、gormx#76、gormx#77。
+
 # Changelog — oekit/gormx
 
 所有 notable 变更记录如下。格式参考 [Keep a Changelog](https://keepachangelog.com/)。

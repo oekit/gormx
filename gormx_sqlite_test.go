@@ -257,8 +257,9 @@ func TestOpen_WithConnectionPool(t *testing.T) {
 	dsn := "file:" + uuid.New().String() + "?mode=memory&cache=shared"
 	dialector := sqlite.Open(dsn)
 
+	// #76 起参数顺序对齐 database/sql：maxOpen 在前
 	db, err := Open(dialector,
-		WithConnectionPool(2, 5, time.Hour),
+		WithConnectionPool(5, 2, time.Hour),
 	)
 	if err != nil {
 		t.Fatal(err)

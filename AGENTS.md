@@ -1,7 +1,7 @@
 # AGENTS.md — oekit/gormx
 
 > SQL/GORM 全家——连接池增强、框架无关 CRUD Service、仓储（原 oekit/gorm，v0.3.0 更名）
-> 当前版本：`v0.8.0` · module：`github.com/oekit/gormx` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> 当前版本：`v0.9.0` · module：`github.com/oekit/gormx` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 `./`、`crud/`、`gormrepo/`、`sqlitedrv/`（opt-in 纯 Go sqlite 入口子包，#72 起）
