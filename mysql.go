@@ -50,5 +50,5 @@ func OpenMySQL(cfg MySQLConfig) (*gorm.DB, error) {
 		connMaxLife = 30 * time.Minute
 	}
 
-	return Open(mysql.Open(dsn), WithConnectionPool(cfg.MaxIdleConns, cfg.MaxOpenConns, connMaxLife))
+	return Open(mysql.Open(dsn), WithConnectionPool(cfg.MaxOpenConns, cfg.MaxIdleConns, connMaxLife)) // #76：maxOpen 在前
 }
