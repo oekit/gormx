@@ -140,6 +140,26 @@ func TestRunSelectsTargetDir(t *testing.T) {
 	}
 }
 
+// embed.FS 形态的消费方：Root="" 或 "."（路径前缀）都不得误报缺文件——
+// fs.ValidPath 拒绝 "./mysql/x"，必须经 path.Join 归一。
+func TestRunRootVariants(t *testing.T) {
+	flatFS := fstest.MapFS{
+		"mysql/01-install.sql": &fstest.MapFile{Data: []byte("CREATE TABLE t_root (id INT PRIMARY KEY);\n")},
+	}
+	for _, root := range []string{"", "."} {
+		db := openMigrateTestDB(t)
+		opts := Options{
+			Target:  "mysql",
+			Install: []string{"01-install.sql"},
+			FS:      flatFS,
+			Root:    root,
+		}
+		if err := Run(db, opts); err != nil {
+			t.Fatalf("Run(Root=%q) error = %v", root, err)
+		}
+	}
+}
+
 // 缺脚本文件必须显式报错（清单与目录内容失配是部署错误，静默跳过=漂移）。
 func TestRunMissingScriptFails(t *testing.T) {
 	db := openMigrateTestDB(t)

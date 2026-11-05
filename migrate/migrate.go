@@ -10,6 +10,7 @@ package migrate
 import (
 	"fmt"
 	"io/fs"
+	"path"
 	"strings"
 
 	"github.com/oekit/logx"
@@ -50,7 +51,9 @@ func Run(d *gorm.DB, opts Options) error {
 
 // execScript 执行一个 SQL 文件。
 func execScript(d *gorm.DB, opts Options, script string) error {
-	path := opts.Root + "/" + opts.Target + "/" + script
+	// path.Join 而非字符串拼接：embed.FS 走 fs.ValidPath，"./mysql/x" 这种
+	// 带前导成分的路径直接判不存在（Root="" 或 "." 的消费方会全量误报缺文件）。
+	path := path.Join(opts.Root, opts.Target, script)
 	content, err := fs.ReadFile(opts.FS, path)
 	if err != nil {
 		return fmt.Errorf("读取 SQL 文件 %s: %w", path, err)
