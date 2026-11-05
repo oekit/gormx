@@ -23,6 +23,7 @@ go get github.com/oekit/gormx@v0.10.0
 | `gormx`（模块根包） | `github.com/oekit/gormx` | `Open`（函数选项连接池）、`OpenMySQL`、`Paginate`（单查询分页）、`InTransactionContext`、`FilterBuilder` |
 | `crud` | `github.com/oekit/gormx/crud` | 框架无关 CRUD Service：泛型 `NewBaseService[T, ID, CreateReq, UpdateReq]`（ID=实体主键类型，int64/string 文本主键/UUID 均可）；repo 实现 `TxRepository` 时 Update 自动「事务 + FOR UPDATE 行锁」消除丢更新，afterUpdate 钩子失败整体回滚 |
 | `gormrepo` | `github.com/oekit/gormx/gormrepo` | `NewGormRepository[T, ID](db, opts...)` 仓储实现（可选查询装饰器：行级 scope 自动注入，含按 ID 路径） |
+| `migrate` | `github.com/oekit/gormx/migrate` | 「裸 SQL 脚本 + 单层平铺清单」建表/升级执行器：`Run(d, Options{Target, Install, Upgrade, FS, Root})` 按 Target 选目录全量执行（脚本自带幂等）；`SplitStatements`（注释剥离 + 引号内分号不切分）；`IsIgnorableError` 幂等错误白名单；多列 `ALTER TABLE ... ADD a, ADD b` 失败自动拆单列逐条执行 |
 
 ## 快速使用
 

@@ -4,7 +4,7 @@
 > 当前版本：`v0.10.0` · module：`github.com/oekit/gormx` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
-`./`、`crud/`、`gormrepo/`、`sqlitedrv/`（opt-in 纯 Go sqlite 入口子包，#72 起）
+`./`、`crud/`、`gormrepo/`、`sqlitedrv/`（opt-in 纯 Go sqlite 入口子包，#72 起）、`migrate/`（裸 SQL 脚本建表/升级执行器）
 
 ## 硬规则速览（全矩阵适用）
 
