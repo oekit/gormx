@@ -1,3 +1,7 @@
+## [v0.10.1] — 2026-11-06
+
+- build: 矩阵依赖地板对齐（维护轮 #233）
+
 ## [v0.10.0] — 2026-11-06
 
 - feat: 新增 `RunWithAdvisoryLock(ctx, db, key, fn)` 会话级咨询锁原语（[#79](https://github.com/oekit/gormx/issues/79)）——多副本迁移串行化的标准形态：拿锁→执行→解锁**钉在同一条连接**上（gorm `Connection()`，底层 `*sql.Conn`）。坑在连接池语义：`db.Exec("SELECT pg_advisory_lock(?)")` 与 `defer db.Exec("SELECT pg_advisory_unlock(?)")` 各自从池取连接，解锁落在另一条连接时是**空操作（不报错）**——锁随持锁连接归还池而泄漏（会话级锁不随归还释放），第二个副本的阻塞式拿锁等到持锁连接关闭（池 lifetime 分钟级）= 并发首启挂死；且 database/sql 池的 LIFO 空闲复用让单线程下解锁大概率落同连接——缺陷单进程内近乎不可见、无报错，只在多副本/并发 churn 下显形。契约：fn 结束（含 panic）必然解锁（defer 落在持锁连接）；拿锁阻塞可被 ctx 取消中断（未拿到锁的路径不解锁）；解锁走 `context.Background()`（收尾路径调用方 ctx 已取消也必须尽力解锁），解锁失败打 ERROR（锁泄漏到持锁连接关闭，池 lifetime 兜底，告警面应覆盖）；方言 postgres=pg_advisory_lock/unlock、mysql=GET_LOCK/RELEASE_LOCK（同键同坑一并收编，int64 键型共用）、其余（含 sqlite）返回类型化 `ErrAdvisoryLockUnsupported`——互斥诉求在不支持方言上显式报错，不静默退化成无锁执行
