@@ -1,3 +1,7 @@
+## [v0.11.2] — 2026-11-06
+
+- build: 矩阵依赖地板对齐（维护轮 #233）
+
 ## [v0.11.1] — 2026-11-06
 
 - fix(migrate): 脚本路径改 path.Join——embed.FS 的 fs.ValidPath 拒绝 "./mysql/x" 形态，Root=""/"." 的消费方此前会全量误报缺文件（消费方 kuboard-go/pkg/ddl 实录）
