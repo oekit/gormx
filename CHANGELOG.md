@@ -1,3 +1,7 @@
+## [v0.11.1] — 2026-11-06
+
+- fix(migrate): 脚本路径改 path.Join——embed.FS 的 fs.ValidPath 拒绝 "./mysql/x" 形态，Root=""/"." 的消费方此前会全量误报缺文件（消费方 kuboard-go/pkg/ddl 实录）
+
 ## [v0.11.0] — 2026-11-06
 
 - feat: 新增 IntSoftDelete 整型软删除原语（deleted TINYINT 0=未删 1=已删）——查询/更新自动带 deleted=0，DELETE 自动改写 UPDATE；按主键删除自建 WHERE IN（与 gorm.SoftDeleteDeleteClause 语义一致）。feat: 新增 migrate 子包——「裸 SQL 脚本 + 单层平铺清单」建表/升级执行器：按 Target 选目录全量执行、SplitStatements（注释剥离+引号内分号不切分）、IsIgnorableError 幂等白名单、多列 ALTER ADD 失败自动拆单列逐条执行。来源：kuboard-go 已验证实现上移（matrix 决策 U1/U3）
