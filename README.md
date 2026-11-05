@@ -20,7 +20,7 @@ go get github.com/oekit/gormx@v0.10.0
 
 | 包 | import 路径 | 做什么 |
 |---|---|---|
-| `gormx`（模块根包） | `github.com/oekit/gormx` | `Open`（函数选项连接池）、`OpenMySQL`、`Paginate`（单查询分页）、`InTransactionContext`、`FilterBuilder` |
+| `gormx`（模块根包） | `github.com/oekit/gormx` | `Open`（函数选项连接池）、`OpenMySQL`、`Paginate`（单查询分页）、`InTransactionContext`、`FilterBuilder`、`IntSoftDelete`（整型逻辑删除 0=未删 1=已删，DELETE→UPDATE 重写） |
 | `crud` | `github.com/oekit/gormx/crud` | 框架无关 CRUD Service：泛型 `NewBaseService[T, ID, CreateReq, UpdateReq]`（ID=实体主键类型，int64/string 文本主键/UUID 均可）；repo 实现 `TxRepository` 时 Update 自动「事务 + FOR UPDATE 行锁」消除丢更新，afterUpdate 钩子失败整体回滚 |
 | `gormrepo` | `github.com/oekit/gormx/gormrepo` | `NewGormRepository[T, ID](db, opts...)` 仓储实现（可选查询装饰器：行级 scope 自动注入，含按 ID 路径） |
 
