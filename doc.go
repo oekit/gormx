@@ -1,6 +1,6 @@
 // Package gormx 提供 GORM 数据库客户端封装。
 //
-// 统一封装：自定义 Logger、连接池配置。
+// 统一封装：自定义 Logger、连接池配置、会话级咨询锁（RunWithAdvisoryLock：拿锁→执行→解锁钉在同一条连接上，#79）。
 // 零可观测性副作用：构造不注入任何 tracing 插件。
 //
 // # 快速接入
