@@ -62,7 +62,7 @@ func RunWithAdvisoryLock(ctx context.Context, db *gorm.DB, key int64, fn func(tx
 	if fn == nil {
 		return errors.New("gormx: RunWithAdvisoryLock fn must not be nil")
 	}
-	lockSQL, unlockSQL, err := advisoryLockSQLs(db.Dialector.Name())
+	lockSQL, unlockSQL, err := advisoryLockSQLs(db.Name())
 	if err != nil {
 		return err
 	}
