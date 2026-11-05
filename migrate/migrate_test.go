@@ -143,12 +143,15 @@ func TestRunSelectsTargetDir(t *testing.T) {
 // embed.FS 形态的消费方：Root="" 或 "."（路径前缀）都不得误报缺文件——
 // fs.ValidPath 拒绝 "./mysql/x"，必须经 path.Join 归一。
 func TestRunRootVariants(t *testing.T) {
+	flatFS := fstest.MapFS{
+		"mysql/01-install.sql": &fstest.MapFile{Data: []byte("CREATE TABLE t_root (id INT PRIMARY KEY);\n")},
+	}
 	for _, root := range []string{"", "."} {
 		db := openMigrateTestDB(t)
 		opts := Options{
 			Target:  "mysql",
 			Install: []string{"01-install.sql"},
-			FS:      testFS(),
+			FS:      flatFS,
 			Root:    root,
 		}
 		if err := Run(db, opts); err != nil {
