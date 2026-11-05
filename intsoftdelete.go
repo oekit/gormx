@@ -54,7 +54,7 @@ func (d *IntSoftDelete) Scan(value any) error {
 				*d = IntSoftDeleteAlive
 				break
 			}
-			*d = IntSoftDelete(*d)*10 + IntSoftDelete(b-'0')
+			*d = *d*10 + IntSoftDelete(b-'0')
 		}
 	default:
 		*d = IntSoftDeleteAlive
