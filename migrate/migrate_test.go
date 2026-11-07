@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"testing/fstest"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/oekit/gormx"
 )
 
 // splitCases 固化 SplitStatements 的切分规则（与既有消费方 DdlService.splitStatements 同规则）。
@@ -315,5 +317,58 @@ func TestSplitStatementsDelimiterNoStateMachine(t *testing.T) {
 	first := strings.Fields(strings.TrimSpace(got[0]))
 	if len(first) == 0 || !strings.EqualFold(first[0], "DELIMITER") {
 		t.Errorf("首条碎片应以 DELIMITER 开头, got %#v", got[0])
+	}
+}
+
+// ---- #98：LockKey 组合口（多副本 DDL 串行化） ----
+
+// TestRunLockKeyEmptyNoLock 空 LockKey = 缺省行为不变：不加锁、脚本照常执行。
+func TestRunLockKeyEmptyNoLock(t *testing.T) {
+	db := openMigrateTestDB(t)
+	opts := Options{
+		Target:  "mysql",
+		Install: []string{"01-install.sql"},
+		FS:      testFS(),
+		Root:    "ddl",
+	}
+	if err := Run(db, opts); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+// TestRunLockKeyUnsupportedDialectFailClosed 方言不支持会话级咨询锁
+// （sqlite）时 LockKey 必须显式报错——不静默降级为无锁执行（调用方要的
+// 是互斥，静默无锁比报错危险得多；与 RunWithAdvisoryLock 方言策略对齐）。
+func TestRunLockKeyUnsupportedDialectFailClosed(t *testing.T) {
+	db := openMigrateTestDB(t)
+	opts := Options{
+		Target:  "mysql",
+		Install: []string{"01-install.sql"},
+		FS:      testFS(),
+		Root:    "ddl",
+		LockKey: "mydb+ddl-manifest",
+	}
+	err := Run(db, opts)
+	if !errors.Is(err, gormx.ErrAdvisoryLockUnsupported) {
+		t.Fatalf("sqlite + LockKey 应报 ErrAdvisoryLockUnsupported, got: %v", err)
+	}
+	// fail-closed：拿锁失败（未执行）时不得执行任何脚本
+	var rows int
+	if qerr := db.Raw("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='t_a'").Scan(&rows).Error; qerr != nil {
+		t.Fatalf("probe sqlite_master: %v", qerr)
+	}
+	if rows != 0 {
+		t.Error("锁未拿到时不应执行任何 DDL（fail-closed 被击穿）")
+	}
+}
+
+// TestLockKeyIntDeterministic 键折叠的确定性契约：同一字符串跨副本必须
+// 得到同一 int64（互斥成立的前提）；不同字符串应得到不同键。
+func TestLockKeyIntDeterministic(t *testing.T) {
+	if lockKeyInt("mydb+ddl") != lockKeyInt("mydb+ddl") {
+		t.Fatal("同一锁键折叠结果必须一致（跨副本互斥的前提）")
+	}
+	if lockKeyInt("mydb+ddl") == lockKeyInt("otherdb+ddl") {
+		t.Fatal("不同锁键折叠到同一 int64（碰撞，口径失效）")
 	}
 }

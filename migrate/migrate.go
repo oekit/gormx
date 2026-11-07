@@ -16,13 +16,16 @@
 package migrate
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"path"
 	"reflect"
 	"strings"
 
+	"github.com/oekit/gormx"
 	"github.com/oekit/logx"
 	"gorm.io/gorm"
 )
@@ -39,13 +42,42 @@ type Options struct {
 	FS fs.FS
 	// Root 脚本根目录（FS 内的相对路径，如 "ddl"）。
 	Root string
+	// LockKey 非空时，Run 把全量执行包进 gormx.RunWithAdvisoryLock 的
+	// 会话级咨询锁内（#98：多副本同时首启的 DDL 串行化组合口）。
+	//
+	//   - 空 = 不加锁（缺省行为不变；单副本/开发环境）；
+	//   - 键为字符串，跨副本用**同一字符串**即互斥；建议口径取稳定业务
+	//     维度（如 db 名 + 表清单哈希）——每库一个键会在多服务共用库时
+	//     互锁，每 target/表一个键粒度又太细（本就该一起串行化的脚本
+	//     被拆成并行）；
+	//   - 内部经 FNV-1a 64 折成 int64 会话键（PG/MySQL 咨询锁键域），
+	//     同一字符串必得同一 int64；不同字符串碰撞概率 2^-64 量级；
+	//   - 拿锁阻塞直到获得（Run 无 ctx 入参，用 Background），拿锁失败/
+	//     执行失败都返回错误 = fail-closed：交给部署的重启策略重试，
+	//     比静默无锁执行安全（多副本并发 DDL 正是要防的事故形态）；
+	//   - 方言不支持会话级咨询锁（sqlite 等）显式返回
+	//     gormx.ErrAdvisoryLockUnsupported——与 RunWithAdvisoryLock 的
+	//     方言策略对齐，不静默降级为无锁执行。
+	LockKey string
 }
 
 // Run 依次执行 install 与 upgrade 全量脚本。
 //
 // 全量执行（而非记账只跑增量）是刻意的：脚本本身被设计成幂等
 // （CREATE TABLE IF NOT EXISTS / INSERT IGNORE 等），重复执行靠幂等 + 异常兜底保证安全。
+//
+// Options.LockKey 非空时，全量执行在会话级咨询锁内串行化（多副本首启
+// DDL 互斥，见 Options.LockKey 文档）。
 func Run(d *gorm.DB, opts Options) error {
+	exec := func(tx *gorm.DB) error { return runScripts(tx, opts) }
+	if opts.LockKey == "" {
+		return exec(d)
+	}
+	return gormx.RunWithAdvisoryLock(context.Background(), d, lockKeyInt(opts.LockKey), exec)
+}
+
+// runScripts 依次执行 install 与 upgrade 清单。
+func runScripts(d *gorm.DB, opts Options) error {
 	for _, script := range opts.Install {
 		if err := execScript(d, opts, script); err != nil {
 			return err
@@ -57,6 +89,16 @@ func Run(d *gorm.DB, opts Options) error {
 		}
 	}
 	return nil
+}
+
+// lockKeyInt 把字符串锁键折叠为 int64 会话咨询锁键（FNV-1a 64）。
+// 键域口径与 gormx.RunWithAdvisoryLock 一致（PG 咨询锁原生 int64 单键、
+// MySQL GET_LOCK 十进制串语义），折叠是确定性的：同一字符串跨副本必然
+// 得到同一 int64，互斥才成立。
+func lockKeyInt(key string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key))
+	return int64(h.Sum64())
 }
 
 // execScript 执行一个 SQL 文件。
