@@ -8,10 +8,12 @@
 // # 查询条件的 fail-closed 契约
 //
 // Query.Where/Or 的操作符走白名单（=, !=, <>, <, >, <=, >=, LIKE, ILIKE,
-// IN, NOT IN, BETWEEN, NOT BETWEEN, IS NULL, IS NOT NULL），值始终参数化。
-// 未知操作符或非法的 BETWEEN/NOT BETWEEN 值形状（支持 [2]any、len==2 的
-// []any、两个连续变参三种形状）一律渲染为恒假的 1=0 —— 过滤条件绝不会被
-// 静默丢弃，避免租户/权限过滤凭空消失造成数据暴露。
+// IN, NOT IN, BETWEEN, NOT BETWEEN, IS NULL, IS NOT NULL），值始终参数化；
+// 字段名同样走标识符白名单（^[A-Za-z_][A-Za-z0-9_.]*$，含表限定名——
+// field 会拼入 SQL 片段，前端可控的字段名透传即 SQL 注入）。
+// 白名单外的字段名、未知操作符或非法的 BETWEEN/NOT BETWEEN 值形状
+// （支持 [2]any、len==2 的 []any、两个连续变参三种形状）一律渲染为恒假的
+// 1=0 —— 过滤条件绝不会被静默丢弃，避免租户/权限过滤凭空消失造成数据暴露。
 //
 // # 写语义：RowsAffected / found / immutable 列
 //

@@ -5,14 +5,27 @@
 //   - 幂等兜底：重复键/列/索引、建表「已存在」类错误一律跳过；多列 ALTER TABLE
 //     ... ADD a, ADD b 失败时自动拆成单列逐条执行（MySQL 的多列 ADD 是原子的，
 //     直接跳过会漏掉真正需要新增的列）
+//
+// # 已知局限：不支持 DELIMITER / 存储过程脚本（#104）
+//
+// SplitStatements 按「引号外分号切分」工作，没有 DELIMITER 状态机——MySQL
+// 存储过程/触发器脚本（DELIMITER $$ ... END$$ DELIMITER ;）的过程体内分号
+// 会被当作语句终止符逐条拆出，必然语法报错导致迁移中止。此类脚本请经专用
+// 迁移通道；执行中命中 DELIMITER 指令时打 WARN 指明根因（否则消费方看到的
+// 是过程体第一句的语法错误，不会指向切分器局限）。
 package migrate
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"path"
+	"reflect"
 	"strings"
 
+	"github.com/oekit/gormx"
 	"github.com/oekit/logx"
 	"gorm.io/gorm"
 )
@@ -29,13 +42,42 @@ type Options struct {
 	FS fs.FS
 	// Root 脚本根目录（FS 内的相对路径，如 "ddl"）。
 	Root string
+	// LockKey 非空时，Run 把全量执行包进 gormx.RunWithAdvisoryLock 的
+	// 会话级咨询锁内（#98：多副本同时首启的 DDL 串行化组合口）。
+	//
+	//   - 空 = 不加锁（缺省行为不变；单副本/开发环境）；
+	//   - 键为字符串，跨副本用**同一字符串**即互斥；建议口径取稳定业务
+	//     维度（如 db 名 + 表清单哈希）——每库一个键会在多服务共用库时
+	//     互锁，每 target/表一个键粒度又太细（本就该一起串行化的脚本
+	//     被拆成并行）；
+	//   - 内部经 FNV-1a 64 折成 int64 会话键（PG/MySQL 咨询锁键域），
+	//     同一字符串必得同一 int64；不同字符串碰撞概率 2^-64 量级；
+	//   - 拿锁阻塞直到获得（Run 无 ctx 入参，用 Background），拿锁失败/
+	//     执行失败都返回错误 = fail-closed：交给部署的重启策略重试，
+	//     比静默无锁执行安全（多副本并发 DDL 正是要防的事故形态）；
+	//   - 方言不支持会话级咨询锁（sqlite 等）显式返回
+	//     gormx.ErrAdvisoryLockUnsupported——与 RunWithAdvisoryLock 的
+	//     方言策略对齐，不静默降级为无锁执行。
+	LockKey string
 }
 
 // Run 依次执行 install 与 upgrade 全量脚本。
 //
 // 全量执行（而非记账只跑增量）是刻意的：脚本本身被设计成幂等
 // （CREATE TABLE IF NOT EXISTS / INSERT IGNORE 等），重复执行靠幂等 + 异常兜底保证安全。
+//
+// Options.LockKey 非空时，全量执行在会话级咨询锁内串行化（多副本首启
+// DDL 互斥，见 Options.LockKey 文档）。
 func Run(d *gorm.DB, opts Options) error {
+	exec := func(tx *gorm.DB) error { return runScripts(tx, opts) }
+	if opts.LockKey == "" {
+		return exec(d)
+	}
+	return gormx.RunWithAdvisoryLock(context.Background(), d, lockKeyInt(opts.LockKey), exec)
+}
+
+// runScripts 依次执行 install 与 upgrade 清单。
+func runScripts(d *gorm.DB, opts Options) error {
 	for _, script := range opts.Install {
 		if err := execScript(d, opts, script); err != nil {
 			return err
@@ -47,6 +89,16 @@ func Run(d *gorm.DB, opts Options) error {
 		}
 	}
 	return nil
+}
+
+// lockKeyInt 把字符串锁键折叠为 int64 会话咨询锁键（FNV-1a 64）。
+// 键域口径与 gormx.RunWithAdvisoryLock 一致（PG 咨询锁原生 int64 单键、
+// MySQL GET_LOCK 十进制串语义），折叠是确定性的：同一字符串跨副本必然
+// 得到同一 int64，互斥才成立。
+func lockKeyInt(key string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key))
+	return int64(h.Sum64())
 }
 
 // execScript 执行一个 SQL 文件。
@@ -61,12 +113,28 @@ func execScript(d *gorm.DB, opts Options, script string) error {
 	logx.Delegating("gormx.migrate").Info("执行数据库脚本", "script", path)
 
 	stmts := SplitStatements(string(content))
+	warnedDelimiter := false
 	for i, stmt := range stmts {
+		// DELIMITER 指令出现 = 脚本面超出切分器能力（#104）：fail-loud 之前
+		// 先把根因说清楚——后续碎片执行报的是过程体语法错误，不指向这里。
+		if !warnedDelimiter && isDelimiterDirective(stmt) {
+			logx.Delegating("gormx.migrate").Warn(
+				"脚本含 DELIMITER 指令：SplitStatements 不支持 DELIMITER/存储过程脚本（过程体内的分号会被当作语句终止符逐条拆出、必然语法报错）——此类脚本请经专用迁移通道处理",
+				"script", path)
+			warnedDelimiter = true
+		}
 		if err := execStatement(d, path, i+1, stmt); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// isDelimiterDirective 报告语句是否以 DELIMITER 指令开头（MySQL 客户端指令，
+// 大小写不敏感）。它不是 SQL 语句——出现即说明脚本依赖 DELIMITER 语义。
+func isDelimiterDirective(stmt string) bool {
+	fields := strings.Fields(strings.TrimSpace(stmt))
+	return len(fields) > 0 && strings.EqualFold(fields[0], "DELIMITER")
 }
 
 // execStatement 执行单条 SQL，必要时做幂等降级。
@@ -176,19 +244,25 @@ func execSplitAlters(d *gorm.DB, stmt string) (bool, error) {
 
 // IsIgnorableError 判断异常是否属于「重复执行可跳过」。
 //
-// 白名单对齐 Spring 复刻消费方的既有实现（文案大小写不敏感）：
+// 判定面两级（#96，对齐根包 IsBusyErr 的结构论证：驱动文案**不是契约**——
+// MySQL 驱动升级、PG 本地化 locale（lc_messages 非英语时错误文案整句变型）、
+// proxy/中间层改写都会动文案，且文本匹配双向危险：漏匹配让幂等错误中断
+// 迁移，过宽匹配让致命错误被静默跳过、schema 缺东西而迁移「成功」）：
 //
-//	"already exists"                    PG 42P07 / 通用
-//	"duplicate column name"             MySQL 1060
-//	"duplicate key name"                MySQL 1061
-//	"unknown index"                     MySQL 1091
-//	"check that column/key exists"      MySQL 1091
-//	"check that it exists"              MySQL 1091
-//	"duplicate entry" / "duplicate key" / "duplicate table" / "duplicate index"
-//	"relation already exists" / "already been created"
+//  1. 类型化主判（isIgnorableTyped）：MySQL 错误号（*mysql.MySQLError.Number：
+//     1050/1060/1061/1062/1091）与 PG SQLSTATE（*pgconn.PgError.SQLState()：
+//     42P07/42P01/42701/42710/23505）——码是协议层契约，不受文案漂移影响；
+//  2. 文案兜底（最后防线）：下方英文子串表，仅覆盖类型化路径够不到的
+//     驱动/方言（如 sqlite 的 "already exists"）。表内容不是契约，
+//     驱动改文案后只剩它时判定即退化——不要反向依赖它。
+//
+// 两级判据都不命中时按致命错误处理（不跳过、显式报错）。
 func IsIgnorableError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if isIgnorableTyped(err) {
+		return true
 	}
 	msg := strings.ToLower(err.Error())
 	for _, needle := range []string{
@@ -212,12 +286,114 @@ func IsIgnorableError(err error) bool {
 	return false
 }
 
+// pgSQLStater 是 *pgconn.PgError 的局部接口投影：不 import pgx（本模块零
+// pg 驱动链接），SQLState() 方法签名与 pgconn.PgError 一致，errors.As 沿
+// 错误链命中（gorm/包装层透明）。
+type pgSQLStater interface {
+	SQLState() string
+}
+
+// ignorablePGCodes 是「重复执行可跳过」的 PostgreSQL SQLSTATE 白名单：
+//
+//	42P07 duplicate_table（建表已存在）
+//	42P01 undefined_table（DROP 不存在的表）
+//	42701 duplicate_column（加列已存在）
+//	42710 duplicate_object（CREATE OR REPLACE 之外的重复对象）
+//	23505 unique_violation（幂等 INSERT 撞唯一键）
+var ignorablePGCodes = map[string]bool{
+	"42P07": true,
+	"42P01": true,
+	"42701": true,
+	"42710": true,
+	"23505": true,
+}
+
+// ignorableMySQLNumbers 是「重复执行可跳过」的 MySQL 错误号白名单：
+//
+//	1050 Table 'x' already exists
+//	1060 Duplicate column name
+//	1061 Duplicate key name
+//	1062 Duplicate entry
+//	1091 Can't DROP ... ; check that column/key exists
+var ignorableMySQLNumbers = map[uint16]bool{
+	1050: true,
+	1060: true,
+	1061: true,
+	1062: true,
+	1091: true,
+}
+
+// isIgnorableTyped 是类型化主判（#96）：码命中白名单才算，未命中**不**回落
+// 文案（由调用方统一兜底）——类型可辨而码不在白名单的（如 PG 42601 语法错）
+// 恰是必须显式报错的形态。
+func isIgnorableTyped(err error) bool {
+	var pg pgSQLStater
+	if errors.As(err, &pg) && ignorablePGCodes[pg.SQLState()] {
+		return true
+	}
+	if n, ok := mysqlErrorNumber(err); ok {
+		return ignorableMySQLNumbers[n]
+	}
+	return false
+}
+
+// mysqlErrorNumber 沿 errors 链（含 Unwrap() []error 的多路树）查找
+// github.com/go-sql-driver/mysql 的 *MySQLError 并返回其错误号。
+//
+// MySQLError 以**导出字段** Number uint16（而非方法）暴露错误码——局部接口
+// 断言够不到，按「指针结构体、类型名 MySQLError、Number 字段 uint16」的
+// 形状经反射读取（只读形状，不 import 驱动包、不做任何驱动调用，保持本模块
+// 零驱动链接的口径）。
+func mysqlErrorNumber(err error) (uint16, bool) {
+	for err != nil {
+		if n, ok := mysqlErrorNumberOne(err); ok {
+			return n, true
+		}
+		switch x := err.(type) {
+		case interface{ Unwrap() error }:
+			err = x.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, sub := range x.Unwrap() {
+				if n, ok := mysqlErrorNumber(sub); ok {
+					return n, true
+				}
+			}
+			return 0, false
+		default:
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// mysqlErrorNumberOne 对单个错误值做形状判定并读取 Number 字段。
+func mysqlErrorNumberOne(err error) (uint16, bool) {
+	v := reflect.ValueOf(err)
+	for v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return 0, false
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct || v.Type().Name() != "MySQLError" {
+		return 0, false
+	}
+	f := v.FieldByName("Number")
+	if f.IsValid() && f.Kind() == reflect.Uint16 {
+		return uint16(f.Uint()), true
+	}
+	return 0, false
+}
+
 // SplitStatements 把 SQL 文件切成单条语句。
 //
 // 规则（与 Spring 复刻消费方 splitStatements 同规则）：
 //   - `--` 行注释、`/* */` 块注释被剥离（随语句一起丢弃）
 //   - 单引号 / 双引号 / 反引号内的分号不切分（反斜杠转义引号可正确跳过）
 //   - 以 `;` 结尾为一条语句；空语句丢弃
+//
+// ⚠️ 不支持 DELIMITER / 存储过程脚本（#104，见包文档「已知局限」）：
+// 没有 DELIMITER 状态机，过程体内的分号会被当作语句终止符逐条拆出。
 func SplitStatements(content string) []string {
 	var statements []string
 	var code strings.Builder

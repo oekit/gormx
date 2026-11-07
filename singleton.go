@@ -118,8 +118,13 @@ func (r *SingletonRepo[T]) Save(ctx context.Context, model T) error {
 		if err == nil {
 			return nil
 		}
-		// 并发首插：另一方已 Create，本轮重读命中其记录走 Save 更新
-		if attempt == 0 && errors.Is(err, gorm.ErrDuplicatedKey) {
+		// 并发首插：另一方已 Create，本轮重读命中其记录走 Save 更新。
+		// 判据用 IsUniqueViolation（#99）：它覆盖 gorm.ErrDuplicatedKey（开
+		// TranslateError 时）**和**各家驱动的裸文案——sqlite（glebarez 纯 Go，
+		// 本包测试默认库）/MySQL/PG 未开 TranslateError 时错误是裸字符串，
+		// errors.Is(err, gorm.ErrDuplicatedKey) 判不出来，收敛逻辑一次都不
+		// 触发，正是该重试存在的理由。
+		if attempt == 0 && IsUniqueViolation(err) {
 			continue
 		}
 		break
@@ -161,7 +166,10 @@ func (r *SingletonRepo[T]) GetOrCreate(ctx context.Context) (T, error) {
 		if err == nil {
 			return result, nil
 		}
-		if attempt == 0 && errors.Is(err, gorm.ErrDuplicatedKey) {
+		// 与 Save 同判据（#99）：IsUniqueViolation 含 gorm.ErrDuplicatedKey
+		// 分支与 sqlite/MySQL/PG 的裸文案兜底——只认 ErrDuplicatedKey 时
+		// sqlite 下（未开 TranslateError）收敛逻辑形同虚设。
+		if attempt == 0 && IsUniqueViolation(err) {
 			continue
 		}
 		break

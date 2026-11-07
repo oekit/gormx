@@ -1,9 +1,16 @@
 package migrate
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
+	"log"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/go-sql-driver/mysql"
+	"github.com/oekit/gormx"
 )
 
 // splitCases 固化 SplitStatements 的切分规则（与既有消费方 DdlService.splitStatements 同规则）。
@@ -191,5 +198,179 @@ func TestRunFatalErrorFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bad.sql") {
 		t.Fatalf("error must carry script path, got: %v", err)
+	}
+}
+
+// fakePgError 按 *pgconn.PgError 的公开形状镜像：SQLState() 方法（pgconn 的
+// 错误码经该方法暴露，局部接口断言正是锚定它）。文案用非英语（模拟 PG
+// lc_messages 本地化后英文兜底 needles 全部失配的形态），断言只有类型化
+// 路径能命中。
+type fakePgError struct{ code, msg string }
+
+func (e *fakePgError) Error() string    { return "FEHLER: " + e.msg + " (SQLSTATE " + e.code + ")" }
+func (e *fakePgError) SQLState() string { return e.code }
+
+// TestIsIgnorableError_MySQLTypedPath 真值面（#96）：真实 *mysql.MySQLError
+// （go-sql-driver 已在本模块依赖图内，测试直接构造驱动错误值，无需服务器）。
+// Message 用非英文模拟文案漂移（驱动升级/本地化/proxy 改写）——文案兜底
+// needles 全部失配，命中的只能是类型化的 Number 字段路径。
+func TestIsIgnorableError_MySQLTypedPath(t *testing.T) {
+	ignorable := []uint16{1050, 1060, 1061, 1062, 1091}
+	for _, n := range ignorable {
+		err := &mysql.MySQLError{Number: n, Message: "lokalisierte Fehlermeldung"}
+		if !IsIgnorableError(err) {
+			t.Errorf("MySQL 错误号 %d 应经类型化路径判为可忽略", n)
+		}
+	}
+	// 负例：致命错误号不得因文案巧合被放过（数字不匹配任何 needle）
+	for _, n := range []uint16{1064 /*syntax*/, 1146 /*no table*/, 1045 /*access denied*/} {
+		if IsIgnorableError(&mysql.MySQLError{Number: n, Message: "schwerer Fehler"}) {
+			t.Errorf("MySQL 错误号 %d 不应判为可忽略", n)
+		}
+	}
+	// 错误链穿透：gorm/调用方的 %w 包装层
+	wrapped := fmt.Errorf("exec ddl: %w", &mysql.MySQLError{Number: 1062, Message: "x"})
+	if !IsIgnorableError(wrapped) {
+		t.Error("errors 链上的 *MySQLError 应被命中")
+	}
+}
+
+// TestIsIgnorableError_PGTypedPath PG SQLSTATE 类型化路径（#96）：
+// 白名单码全命中、非白名单码（语法错/外键/权限）不误判。
+func TestIsIgnorableError_PGTypedPath(t *testing.T) {
+	for _, code := range []string{"42P07", "42P01", "42701", "42710", "23505"} {
+		if !IsIgnorableError(&fakePgError{code: code, msg: "lokalisierte Meldung"}) {
+			t.Errorf("SQLSTATE %s 应经类型化路径判为可忽略", code)
+		}
+	}
+	for _, code := range []string{"42601" /*syntax*/, "23503" /*fk*/, "42501" /*priv*/} {
+		if IsIgnorableError(&fakePgError{code: code, msg: "schwerer Fehler"}) {
+			t.Errorf("SQLSTATE %s 不应判为可忽略", code)
+		}
+	}
+	// 包装链穿透
+	wrapped := fmt.Errorf("migrate: %w", &fakePgError{code: "42P07", msg: "x"})
+	if !IsIgnorableError(wrapped) {
+		t.Error("errors 链上的 SQLStater 应被命中")
+	}
+}
+
+// TestIsIgnorableError_TypedMissDoesNotLeakIntoText 类型未命中时不得提前
+// 返回 false 绕过文案兜底——兜底是最后防线（sqlite 文案等仍依赖它）。
+func TestIsIgnorableError_TypedMissDoesNotLeakIntoText(t *testing.T) {
+	// 实现了 SQLState() 但码不在白名单，同时文案命中 needle：
+	// 兜底必须仍然生效。
+	err := &fakePgError{code: "99999", msg: "relation already exists (hypothetical)"}
+	if !IsIgnorableError(err) {
+		t.Error("类型化未命中不应吞掉文案兜底")
+	}
+}
+
+// captureMigrateLog 重定向标准库 log 输出（logx Delegating 缺省后端），
+// 捕获 migrate 的 WARN 文案做断言。
+func captureMigrateLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	prev := log.Writer()
+	log.SetOutput(buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return buf
+}
+
+// TestRunDelimiterScriptWarnsRootCause（#104）：DELIMITER 脚本超出切分器
+// 能力（过程体分号被逐条拆出、必然语法报错）。fail-loud 之前必须先打
+// WARN 指明根因——否则消费方看到的是过程体第一句的语法错误，不会指向
+// 切分器局限。
+func TestRunDelimiterScriptWarnsRootCause(t *testing.T) {
+	db := openMigrateTestDB(t)
+	buf := captureMigrateLog(t)
+
+	script := "DELIMITER $$\n" +
+		"CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END$$\n" +
+		"DELIMITER ;\n"
+	opts := Options{
+		Target:  "mysql",
+		Install: []string{"proc.sql"},
+		FS:      fstest.MapFS{"ddl/mysql/proc.sql": &fstest.MapFile{Data: []byte(script)}},
+		Root:    "ddl",
+	}
+	// sqlite 下碎片执行报语法错误是预期（fail-loud）；断言的是 WARN 根因
+	// 提示先于/伴随失败出现。
+	_ = Run(db, opts)
+	if !strings.Contains(buf.String(), "DELIMITER") || !strings.Contains(buf.String(), "不支持 DELIMITER") {
+		t.Errorf("DELIMITER 脚本应打根因 WARN, got: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "proc.sql") {
+		t.Errorf("WARN 应携带脚本路径, got: %q", buf.String())
+	}
+}
+
+// TestSplitStatementsDelimiterNoStateMachine 固化当前行为（#104 文档口径）：
+// DELIMITER 指令不切状态，过程体分号被当作语句终止符——这是声明出的局限，
+// 不是隐性契约；将来若实现状态机，本用例应同步改写。
+func TestSplitStatementsDelimiterNoStateMachine(t *testing.T) {
+	script := "DELIMITER $$\nCREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END$$\nDELIMITER ;\n"
+	got := SplitStatements(script)
+	if len(got) < 3 {
+		t.Fatalf("无状态机时过程体应被分号切碎（当前声明行为）, got %#v", got)
+	}
+	first := strings.Fields(strings.TrimSpace(got[0]))
+	if len(first) == 0 || !strings.EqualFold(first[0], "DELIMITER") {
+		t.Errorf("首条碎片应以 DELIMITER 开头, got %#v", got[0])
+	}
+}
+
+// ---- #98：LockKey 组合口（多副本 DDL 串行化） ----
+
+// TestRunLockKeyEmptyNoLock 空 LockKey = 缺省行为不变：不加锁、脚本照常执行。
+func TestRunLockKeyEmptyNoLock(t *testing.T) {
+	db := openMigrateTestDB(t)
+	opts := Options{
+		Target:  "mysql",
+		Install: []string{"01-install.sql"},
+		FS:      testFS(),
+		Root:    "ddl",
+	}
+	if err := Run(db, opts); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+// TestRunLockKeyUnsupportedDialectFailClosed 方言不支持会话级咨询锁
+// （sqlite）时 LockKey 必须显式报错——不静默降级为无锁执行（调用方要的
+// 是互斥，静默无锁比报错危险得多；与 RunWithAdvisoryLock 方言策略对齐）。
+func TestRunLockKeyUnsupportedDialectFailClosed(t *testing.T) {
+	db := openMigrateTestDB(t)
+	opts := Options{
+		Target:  "mysql",
+		Install: []string{"01-install.sql"},
+		FS:      testFS(),
+		Root:    "ddl",
+		LockKey: "mydb+ddl-manifest",
+	}
+	err := Run(db, opts)
+	if !errors.Is(err, gormx.ErrAdvisoryLockUnsupported) {
+		t.Fatalf("sqlite + LockKey 应报 ErrAdvisoryLockUnsupported, got: %v", err)
+	}
+	// fail-closed：拿锁失败（未执行）时不得执行任何脚本
+	var rows int
+	if qerr := db.Raw("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='t_a'").Scan(&rows).Error; qerr != nil {
+		t.Fatalf("probe sqlite_master: %v", qerr)
+	}
+	if rows != 0 {
+		t.Error("锁未拿到时不应执行任何 DDL（fail-closed 被击穿）")
+	}
+}
+
+// TestLockKeyIntDeterministic 键折叠的确定性契约：同一字符串跨副本必须
+// 得到同一 int64（互斥成立的前提）；不同字符串应得到不同键。
+func TestLockKeyIntDeterministic(t *testing.T) {
+	first, second := lockKeyInt("mydb+ddl"), lockKeyInt("mydb+ddl")
+	if first != second {
+		t.Fatal("同一锁键折叠结果必须一致（跨副本互斥的前提）")
+	}
+	other := lockKeyInt("otherdb+ddl")
+	if first == other {
+		t.Fatal("不同锁键折叠到同一 int64（碰撞，口径失效）")
 	}
 }
