@@ -73,7 +73,7 @@ func SavePatch[M any](ctx context.Context, db *gorm.DB, pk any, patch any) error
 // 对不上名的字段显式报错（拼写错误在写入前暴露，而不是静默丢列）。
 func patchUpdates[M any](db *gorm.DB, patch any) (map[string]any, error) {
 	v := reflect.ValueOf(patch)
-	for v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return nil, fmt.Errorf("gormx: SavePatch: patch must not be nil pointer")
 		}
@@ -96,7 +96,7 @@ func patchUpdates[M any](db *gorm.DB, patch any) (map[string]any, error) {
 			return nil, fmt.Errorf("gormx: SavePatch: patch 字段 %s 未导出（补丁字段必须全部导出）", field.Name)
 		}
 		fv := v.Field(i)
-		if fv.Kind() != reflect.Ptr {
+		if fv.Kind() != reflect.Pointer {
 			return nil, fmt.Errorf("gormx: SavePatch: patch 字段 %s 必须为指针类型（nil=不触碰，非 nil=显式写入，含零值）", field.Name)
 		}
 		if fv.IsNil() {

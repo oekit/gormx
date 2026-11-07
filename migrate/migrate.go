@@ -369,7 +369,7 @@ func mysqlErrorNumber(err error) (uint16, bool) {
 // mysqlErrorNumberOne 对单个错误值做形状判定并读取 Number 字段。
 func mysqlErrorNumberOne(err error) (uint16, bool) {
 	v := reflect.ValueOf(err)
-	for v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return 0, false
 		}
