@@ -1,3 +1,11 @@
+
+
+## [v0.11.5] — 2026-11-08
+
+- feat: 模糊查询参数原语 EscapeLike/LikeContains/LikePrefix/LikeSuffix（#114）——LIKE 通配符转义与四种匹配形态，消费方不再手写转义
+
+关联问题单：gormx#114。
+
 ## [v0.11.4] — 2026-11-08
 
 - docs(singleton): #112 收口——该单为 #99 的重报（Save/GetOrCreate 收敛只认 gorm.ErrDuplicatedKey，sqlite/未开 TranslateError 下唯一冲突是裸文案、收敛从不触发），修复已随 v0.11.3（PR #107）落地（判据改 IsUniqueViolation——其内含 errors.Is(gorm.ErrDuplicatedKey) 分支，语义覆盖 #112 建议的 \|\| 组合式；含 sqlite 裸文案冲突的确定性收敛回归测试）；本版把 singleton.go 与回归测试的注释标注对齐重报单号，无行为变更
