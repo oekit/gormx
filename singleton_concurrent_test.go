@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// singletonFixedPK 主键取固定值的单例模型（#99 回归测试用）：
+// singletonFixedPK 主键取固定值的单例模型（#99，重报 #112 回归测试用）：
 // defaultVal 带固定 uid=1，两个「并发首插」副本必然撞同一主键。
 type singletonFixedPK struct {
 	UID  int64  `gorm:"primaryKey;column:uid"`
@@ -63,7 +63,7 @@ func openSingletonDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-// TestSingletonRepo_Save_ConcurrentFirstInsertConverges 回归（#99）：
+// TestSingletonRepo_Save_ConcurrentFirstInsertConverges 回归（#99，重报 #112）：
 // Create 撞唯一约束时 Save 必须重读改走更新路径收敛。旧判据只认
 // gorm.ErrDuplicatedKey，sqlite（glebarez，未开 TranslateError）下唯一冲突
 // 是裸字符串文案，收敛逻辑一次都不触发——错误直接返回给调用方。
@@ -91,7 +91,7 @@ func TestSingletonRepo_Save_ConcurrentFirstInsertConverges(t *testing.T) {
 	}
 }
 
-// TestSingletonRepo_GetOrCreate_ConcurrentFirstInsertConverges 回归（#99）：
+// TestSingletonRepo_GetOrCreate_ConcurrentFirstInsertConverges 回归（#99，重报 #112）：
 // GetOrCreate 同一收敛承诺；旧判据下同样的唯一冲突直接漏出。
 func TestSingletonRepo_GetOrCreate_ConcurrentFirstInsertConverges(t *testing.T) {
 	db := openSingletonDB(t)
