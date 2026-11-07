@@ -50,7 +50,7 @@ func newRedactor(cols []string) *redactor {
 		return nil
 	}
 	// 赋值形态：可选引号（`col` / "col" / [col]）+ = + 值
-	//（引号串，或到 , ) 空白为止的裸值）。保留左侧（列名与等号）便于排障。
+	// （引号串，或到 , ) 空白为止的裸值）。保留左侧（列名与等号）便于排障。
 	alt := strings.Join(names, "|")
 	re, err := regexp.Compile(`(?i)((?:` + "`" + `|"|\[)?(?:` + alt + `)(?:` + "`" + `|"|\])?\s*=\s*)('[^']*'|"[^"]*"|[^,)\s]+)`)
 	if err != nil {

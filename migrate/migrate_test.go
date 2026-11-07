@@ -365,10 +365,12 @@ func TestRunLockKeyUnsupportedDialectFailClosed(t *testing.T) {
 // TestLockKeyIntDeterministic 键折叠的确定性契约：同一字符串跨副本必须
 // 得到同一 int64（互斥成立的前提）；不同字符串应得到不同键。
 func TestLockKeyIntDeterministic(t *testing.T) {
-	if lockKeyInt("mydb+ddl") != lockKeyInt("mydb+ddl") {
+	first, second := lockKeyInt("mydb+ddl"), lockKeyInt("mydb+ddl")
+	if first != second {
 		t.Fatal("同一锁键折叠结果必须一致（跨副本互斥的前提）")
 	}
-	if lockKeyInt("mydb+ddl") == lockKeyInt("otherdb+ddl") {
+	other := lockKeyInt("otherdb+ddl")
+	if first == other {
 		t.Fatal("不同锁键折叠到同一 int64（碰撞，口径失效）")
 	}
 }

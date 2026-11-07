@@ -154,7 +154,7 @@ func (JSONMap[K, V]) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 
 // jsonColumnType 按方言返回 JSON 列的 DDL 类型。
 func jsonColumnType(db *gorm.DB) string {
-	switch db.Dialector.Name() {
+	switch db.Name() {
 	case "mysql":
 		return "JSON"
 	case "postgres":

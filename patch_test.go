@@ -136,9 +136,9 @@ func TestSavePatch_ShapeErrors(t *testing.T) {
 	}
 
 	type unknownPatch struct {
-		Nmae *string // 拼写错误
+		Bogus *string // 模拟拼写错误的字段名
 	}
-	err = SavePatch[patchCfg](ctx, db, cfg.ID, &unknownPatch{Nmae: strp("x")})
+	err = SavePatch[patchCfg](ctx, db, cfg.ID, &unknownPatch{Bogus: strp("x")})
 	if err == nil || !strings.Contains(err.Error(), "无同名字段") {
 		t.Errorf("未知字段应报错（拼写错误写入前暴露）, got %v", err)
 	}

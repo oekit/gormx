@@ -66,7 +66,7 @@ func subqueryInExpr(db *gorm.DB, column string, sub *gorm.DB) (gclause.Expressio
 	if wrapsDerivedTable(db.Name()) {
 		// 派生表包装：外层只取 column 列。Table("(?) as gormx_dt", sub) 是
 		// gorm 的子查询进 FROM 惯用形态，内层 SQL/参数由 gorm 自行渲染绑定
-		//（Select 走字符串形态：clause.Column 值不被 Select 支持）。
+		// （Select 走字符串形态：clause.Column 值不被 Select 支持）。
 		inner = db.Session(&gorm.Session{NewDB: true}).
 			Table("(?) as gormx_dt", sub).
 			Select(column)
