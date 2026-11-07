@@ -24,10 +24,10 @@ github.com/mattn/go-sqlite3 v1.14.22 h1:2gZY6PC6kBnID23Tichd1K+Z0oS6nE/XwU+Vz/5o
 github.com/mattn/go-sqlite3 v1.14.22/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
-github.com/oekit/logx v0.8.4 h1:Z/39ZuDi5PjDioi4r83pzNWjIfDE9mXVDNgC8mvpPes=
-github.com/oekit/logx v0.8.4/go.mod h1:PImzWIays3sTLxewhKh8wI8xqMlATVJxz6V0ifIgNso=
-github.com/oekit/pkg v0.35.1 h1:2fyZMmxVh5/evRzEsA1EHPMImBiABiitwSX+N1yvfts=
-github.com/oekit/pkg v0.35.1/go.mod h1:sVeOtmG1sLY2aSnzFIbUAF2Qoh7G8R5vnWtWmLCv8NM=
+github.com/oekit/logx v0.8.6 h1:dFPV8jbSfECZGM7v/WFFulzF3dAXsFCzX+hVCRDTFIw=
+github.com/oekit/logx v0.8.6/go.mod h1:wUsASSs8nfRzr/l7rpf+96q1VyPY74S3EdkBKCVxajo=
+github.com/oekit/pkg v0.37.1 h1:Hq8FJnTtKNTyJ5gNFUl9ORQkM3WwzSriOHnUmF9bbyA=
+github.com/oekit/pkg v0.37.1/go.mod h1:sVeOtmG1sLY2aSnzFIbUAF2Qoh7G8R5vnWtWmLCv8NM=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 h1:mgKeJMpvi0yx/sU5GsxQ7p6s2wtOnGAHZWCHUM4KGzY=
