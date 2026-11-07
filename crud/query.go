@@ -3,13 +3,14 @@ package crud
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 
 	"github.com/oekit/pkg/pagination"
 )
 
 // Condition 是一条 WHERE 条件的中性形态（SQL 片段 + 占位符参数）。
-// Query string 由本包按操作符白名单生成（见 buildCondition），
+// Query string 由本包按「字段名白名单 + 操作符白名单」生成（见 buildCondition），
 // 值始终走占位符参数化；不识别的条件 fail-closed 渲染为恒假的 1=0。
 type Condition struct {
 	Query string
@@ -72,10 +73,22 @@ var knownOps = map[string]struct{}{
 	"IS NULL": {}, "IS NOT NULL": {},
 }
 
+// validFieldPattern 是 Where/Or 字段名的标识符白名单（#100）：
+// 字母/下划线开头，仅含字母、数字、下划线与点（表限定名 t.col / json 路径
+// col->>key 之外的常规形态）。field 与 op 一样会直接拼入 SQL 片段——
+// 把前端可控的「排序/筛选字段名」透传给 Where 就是经典 SQL 注入，
+// fail-closed 必须同时覆盖 op 与 field 两个面。
+var validFieldPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*$`)
+
+// isValidField 报告字段名是否在标识符白名单内。
+func isValidField(field string) bool {
+	return validFieldPattern.MatchString(field)
+}
+
 // buildCondition 将 (field, op, value) 解析为 SQL 片段与参数。
-// 返回 ok=false 表示无法解析（操作符不在白名单，或 BETWEEN/NOT BETWEEN
-// 值形状非法），调用方必须以 1=0 fail-closed 处理 —— 静默丢弃条件
-// 可能让租户/权限过滤凭空消失（数据暴露面），绝不允许 fail-open。
+// 返回 ok=false 表示无法解析（字段名不在标识符白名单、操作符不在白名单，
+// 或 BETWEEN/NOT BETWEEN 值形状非法），调用方必须以 1=0 fail-closed 处理 ——
+// 静默丢弃条件可能让租户/权限过滤凭空消失（数据暴露面），绝不允许 fail-open。
 //
 // BETWEEN/NOT BETWEEN 支持三种值形状：
 //
@@ -83,6 +96,9 @@ var knownOps = map[string]struct{}{
 //	q.Where("age", "BETWEEN", []any{18, 65})
 //	q.Where("age", "BETWEEN", 18, 65) // 两个连续变参
 func buildCondition(field, op string, value []any) (query string, args []any, ok bool) {
+	if !isValidField(field) {
+		return "", nil, false
+	}
 	op = strings.ToUpper(strings.TrimSpace(op))
 	if _, known := knownOps[op]; !known {
 		return "", nil, false
@@ -173,8 +189,11 @@ const failClosedCondition = "1=0"
 //	q.Where("age", "BETWEEN", 18, 65)       // 两个连续变参
 //	q.Where("age", "BETWEEN", []any{18, 65}) // len==2 切片
 //
-// 未知操作符、非法的 BETWEEN/NOT BETWEEN 值形状一律 fail-closed：
-// 条件渲染为恒假的 1=0（绝不静默丢弃 —— 丢弃租户/权限过滤会造成数据暴露）。
+// field 必须是标识符白名单内的列名（^[A-Za-z_][A-Za-z0-9_.]*$，含表限定名）：
+// field 会拼入 SQL 片段，前端可控的「筛选/排序字段名」透传进来就是 SQL 注入。
+// 白名单外的字段名、未知操作符、非法的 BETWEEN/NOT BETWEEN 值形状一律
+// fail-closed：条件渲染为恒假的 1=0（绝不静默丢弃 —— 丢弃租户/权限过滤
+// 会造成数据暴露）。
 func (q *Query) Where(field, op string, value ...any) *Query {
 	query, args, ok := buildCondition(field, op, value)
 	if !ok {
@@ -190,8 +209,8 @@ func (q *Query) Where(field, op string, value ...any) *Query {
 //	q.Where("status", "=", 1).Or("priority", ">", 5)
 //	// => WHERE status = 1 OR priority > 5
 //
-// 与 Where 相同的操作符白名单与值形状约束；无法识别的 OR 分支同样
-// fail-closed 渲染为 1=0（该分支不命中任何行），绝不静默丢弃。
+// 与 Where 相同的字段名标识符白名单、操作符白名单与值形状约束；无法识别的
+// OR 分支同样 fail-closed 渲染为 1=0（该分支不命中任何行），绝不静默丢弃。
 func (q *Query) Or(field, op string, value ...any) *Query {
 	query, args, ok := buildCondition(field, op, value)
 	if !ok {

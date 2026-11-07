@@ -219,3 +219,67 @@ func TestQuerySpec_WhereRaw_Empty_FailClosed(t *testing.T) {
 		t.Errorf("cond = %q, want %s", got.Query, failClosedCondition)
 	}
 }
+
+// TestQuerySpec_FieldIdentifierFailClosed 回归（#100）：field 与 op 一样直接
+// 拼入 SQL 片段，白名单外的字段名（注入载荷、函数调用、带空格/引号的片段）
+// 必须渲染为恒假的 1=0——把前端可控的「筛选/排序字段名」透传给 Where 就是
+// 经典 SQL 注入，fail-closed 不能只覆盖操作符面。
+func TestQuerySpec_FieldIdentifierFailClosed(t *testing.T) {
+	cases := []struct {
+		name  string
+		field string
+	}{
+		{"注入载荷", "id; DROP TABLE users; --"},
+		{"UNION 注入", "1 UNION SELECT password FROM users"},
+		{"函数调用", "COUNT(*)"},
+		{"引号片段", "' OR '1'='1"},
+		{"带空格", "id DESC"},
+		{"数字开头", "1id"},
+		{"空字段", ""},
+		{"裸点开头", ".id"},
+		{"连字符", "user-name"},
+		{"注释符", "id/*x*/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NewQuery().Where(tc.field, "=", 1).Spec().Conds[0]
+			if got.Query != failClosedCondition {
+				t.Errorf("Where(%q) cond = %q, want %s", tc.field, got.Query, failClosedCondition)
+			}
+			if len(got.Args) != 0 {
+				t.Errorf("fail-closed cond should carry no args, got %v", got.Args)
+			}
+			// Or 分支同一防线
+			gotOr := NewQuery().Or(tc.field, "=", 1).Spec().OrConds[0]
+			if gotOr.Query != failClosedCondition {
+				t.Errorf("Or(%q) cond = %q, want %s", tc.field, gotOr.Query, failClosedCondition)
+			}
+		})
+	}
+}
+
+// TestQuerySpec_FieldIdentifierAllowed（#100 正例）：常规列名、snake_case、
+// 表限定名都在白名单内，既有用法不受影响。
+func TestQuerySpec_FieldIdentifierAllowed(t *testing.T) {
+	cases := []struct{ field, wantPrefix string }{
+		{"id", "id = ?"},
+		{"user_name", "user_name = ?"},
+		{"t.col", "t.col = ?"},
+		{"created_at_2", "created_at_2 = ?"},
+	}
+	for _, tc := range cases {
+		got := NewQuery().Where(tc.field, "=", "v").Spec().Conds[0]
+		if got.Query != tc.wantPrefix {
+			t.Errorf("Where(%q) cond = %q, want %q", tc.field, got.Query, tc.wantPrefix)
+		}
+	}
+	// FIND_IN_SET 的 field 同样过白名单（列在后位拼接）
+	got := NewQuery().Where("tags", "FIND_IN_SET", "go").Spec().Conds[0]
+	if got.Query != "FIND_IN_SET(?, tags) > 0" {
+		t.Errorf("FIND_IN_SET cond = %q", got.Query)
+	}
+	injected := NewQuery().Where("tags) > 0 OR (1", "FIND_IN_SET", "go").Spec().Conds[0]
+	if injected.Query != failClosedCondition {
+		t.Errorf("FIND_IN_SET 字段注入应 fail-closed, got %q", injected.Query)
+	}
+}
