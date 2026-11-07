@@ -22,6 +22,16 @@ type openConfig struct {
 	connIdleTime    time.Duration
 	configurePool   bool
 	maxOpenConnsSet bool // WithConnectionPool 显式设置过 MaxOpenConns（#97）
+	logger          gormLogger.Interface
+}
+
+// WithLogger 替换 Open 注入的默认 Logger（如带列级脱敏的自定义实例，
+// #106：gormx.NewDefaultLogger(gormx.WithRedactColumns("password", ...))）。
+// 传入的 Logger **原样使用**（不再强制 Info 级——级别与脱敏配置尊重调用方）。
+func WithLogger(l gormLogger.Interface) OpenOption {
+	return func(c *openConfig) {
+		c.logger = l
+	}
 }
 
 // WithGormOptions 追加底层 gorm.Option。
@@ -63,6 +73,13 @@ func WithConnMaxIdleTime(d time.Duration) OpenOption {
 //   - 零 tracing 注入：需要 SQL Span 经 github.com/oekit/tracing/gormotel
 //     显式挂载
 //
+// ⚠️ **Info 级 SQL 日志含完整绑定值**（#106）：INSERT/UPDATE 的 VALUES
+// 全量进日志（password/token/request_body 等敏感列随写路径外泄，日志采集
+// 外送进一步放大泄漏面）。敏感列经 WithLogger + WithRedactColumns 脱敏：
+//
+//	db, err := gormx.Open(mysql.Open(dsn), gormx.WithLogger(
+//	    gormx.NewDefaultLogger(gormx.WithRedactColumns("password", "token"))))
+//
 // ⚠️ 连接池配置是 **opt-in**（#75）：不传 WithConnectionPool ⇒ MaxOpenConns=0
 // （database/sql 缺省，**无上限**）——多副本部署下必然打满 PG max_connections
 // （too many clients）。Open 对 MaxOpenConns=0 打 WARN 且**区分两形态**（#97）：
@@ -84,10 +101,12 @@ func Open(dialector gorm.Dialector, opts ...OpenOption) (*gorm.DB, error) {
 		opt(cfg)
 	}
 
-	defaultLogger := NewDefaultLogger()
-
-	gormCfg := gorm.Config{
-		Logger: defaultLogger.LogMode(gormLogger.Info),
+	gormCfg := gorm.Config{}
+	if cfg.logger != nil {
+		// 显式传入的 Logger 原样使用（级别/脱敏配置尊重调用方，不强制 Info）
+		gormCfg.Logger = cfg.logger
+	} else {
+		gormCfg.Logger = NewDefaultLogger().LogMode(gormLogger.Info)
 	}
 	for _, gormOpt := range cfg.gormOptions {
 		if err := gormOpt.Apply(&gormCfg); err != nil {
