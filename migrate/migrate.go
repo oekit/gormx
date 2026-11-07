@@ -8,9 +8,11 @@
 package migrate
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"path"
+	"reflect"
 	"strings"
 
 	"github.com/oekit/logx"
@@ -176,19 +178,25 @@ func execSplitAlters(d *gorm.DB, stmt string) (bool, error) {
 
 // IsIgnorableError 判断异常是否属于「重复执行可跳过」。
 //
-// 白名单对齐 Spring 复刻消费方的既有实现（文案大小写不敏感）：
+// 判定面两级（#96，对齐根包 IsBusyErr 的结构论证：驱动文案**不是契约**——
+// MySQL 驱动升级、PG 本地化 locale（lc_messages 非英语时错误文案整句变型）、
+// proxy/中间层改写都会动文案，且文本匹配双向危险：漏匹配让幂等错误中断
+// 迁移，过宽匹配让致命错误被静默跳过、schema 缺东西而迁移「成功」）：
 //
-//	"already exists"                    PG 42P07 / 通用
-//	"duplicate column name"             MySQL 1060
-//	"duplicate key name"                MySQL 1061
-//	"unknown index"                     MySQL 1091
-//	"check that column/key exists"      MySQL 1091
-//	"check that it exists"              MySQL 1091
-//	"duplicate entry" / "duplicate key" / "duplicate table" / "duplicate index"
-//	"relation already exists" / "already been created"
+//  1. 类型化主判（isIgnorableTyped）：MySQL 错误号（*mysql.MySQLError.Number：
+//     1050/1060/1061/1062/1091）与 PG SQLSTATE（*pgconn.PgError.SQLState()：
+//     42P07/42P01/42701/42710/23505）——码是协议层契约，不受文案漂移影响；
+//  2. 文案兜底（最后防线）：下方英文子串表，仅覆盖类型化路径够不到的
+//     驱动/方言（如 sqlite 的 "already exists"）。表内容不是契约，
+//     驱动改文案后只剩它时判定即退化——不要反向依赖它。
+//
+// 两级判据都不命中时按致命错误处理（不跳过、显式报错）。
 func IsIgnorableError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if isIgnorableTyped(err) {
+		return true
 	}
 	msg := strings.ToLower(err.Error())
 	for _, needle := range []string{
@@ -210,6 +218,105 @@ func IsIgnorableError(err error) bool {
 		}
 	}
 	return false
+}
+
+// pgSQLStater 是 *pgconn.PgError 的局部接口投影：不 import pgx（本模块零
+// pg 驱动链接），SQLState() 方法签名与 pgconn.PgError 一致，errors.As 沿
+// 错误链命中（gorm/包装层透明）。
+type pgSQLStater interface {
+	SQLState() string
+}
+
+// ignorablePGCodes 是「重复执行可跳过」的 PostgreSQL SQLSTATE 白名单：
+//
+//	42P07 duplicate_table（建表已存在）
+//	42P01 undefined_table（DROP 不存在的表）
+//	42701 duplicate_column（加列已存在）
+//	42710 duplicate_object（CREATE OR REPLACE 之外的重复对象）
+//	23505 unique_violation（幂等 INSERT 撞唯一键）
+var ignorablePGCodes = map[string]bool{
+	"42P07": true,
+	"42P01": true,
+	"42701": true,
+	"42710": true,
+	"23505": true,
+}
+
+// ignorableMySQLNumbers 是「重复执行可跳过」的 MySQL 错误号白名单：
+//
+//	1050 Table 'x' already exists
+//	1060 Duplicate column name
+//	1061 Duplicate key name
+//	1062 Duplicate entry
+//	1091 Can't DROP ... ; check that column/key exists
+var ignorableMySQLNumbers = map[uint16]bool{
+	1050: true,
+	1060: true,
+	1061: true,
+	1062: true,
+	1091: true,
+}
+
+// isIgnorableTyped 是类型化主判（#96）：码命中白名单才算，未命中**不**回落
+// 文案（由调用方统一兜底）——类型可辨而码不在白名单的（如 PG 42601 语法错）
+// 恰是必须显式报错的形态。
+func isIgnorableTyped(err error) bool {
+	var pg pgSQLStater
+	if errors.As(err, &pg) && ignorablePGCodes[pg.SQLState()] {
+		return true
+	}
+	if n, ok := mysqlErrorNumber(err); ok {
+		return ignorableMySQLNumbers[n]
+	}
+	return false
+}
+
+// mysqlErrorNumber 沿 errors 链（含 Unwrap() []error 的多路树）查找
+// github.com/go-sql-driver/mysql 的 *MySQLError 并返回其错误号。
+//
+// MySQLError 以**导出字段** Number uint16（而非方法）暴露错误码——局部接口
+// 断言够不到，按「指针结构体、类型名 MySQLError、Number 字段 uint16」的
+// 形状经反射读取（只读形状，不 import 驱动包、不做任何驱动调用，保持本模块
+// 零驱动链接的口径）。
+func mysqlErrorNumber(err error) (uint16, bool) {
+	for err != nil {
+		if n, ok := mysqlErrorNumberOne(err); ok {
+			return n, true
+		}
+		switch x := err.(type) {
+		case interface{ Unwrap() error }:
+			err = x.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, sub := range x.Unwrap() {
+				if n, ok := mysqlErrorNumber(sub); ok {
+					return n, true
+				}
+			}
+			return 0, false
+		default:
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// mysqlErrorNumberOne 对单个错误值做形状判定并读取 Number 字段。
+func mysqlErrorNumberOne(err error) (uint16, bool) {
+	v := reflect.ValueOf(err)
+	for v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return 0, false
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct || v.Type().Name() != "MySQLError" {
+		return 0, false
+	}
+	f := v.FieldByName("Number")
+	if f.IsValid() && f.Kind() == reflect.Uint16 {
+		return uint16(f.Uint()), true
+	}
+	return 0, false
 }
 
 // SplitStatements 把 SQL 文件切成单条语句。

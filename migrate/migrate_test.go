@@ -1,9 +1,12 @@
 package migrate
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 // splitCases 固化 SplitStatements 的切分规则（与既有消费方 DdlService.splitStatements 同规则）。
@@ -191,5 +194,70 @@ func TestRunFatalErrorFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bad.sql") {
 		t.Fatalf("error must carry script path, got: %v", err)
+	}
+}
+
+// fakePgError 按 *pgconn.PgError 的公开形状镜像：SQLState() 方法（pgconn 的
+// 错误码经该方法暴露，局部接口断言正是锚定它）。文案用非英语（模拟 PG
+// lc_messages 本地化后英文兜底 needles 全部失配的形态），断言只有类型化
+// 路径能命中。
+type fakePgError struct{ code, msg string }
+
+func (e *fakePgError) Error() string    { return "FEHLER: " + e.msg + " (SQLSTATE " + e.code + ")" }
+func (e *fakePgError) SQLState() string { return e.code }
+
+// TestIsIgnorableError_MySQLTypedPath 真值面（#96）：真实 *mysql.MySQLError
+// （go-sql-driver 已在本模块依赖图内，测试直接构造驱动错误值，无需服务器）。
+// Message 用非英文模拟文案漂移（驱动升级/本地化/proxy 改写）——文案兜底
+// needles 全部失配，命中的只能是类型化的 Number 字段路径。
+func TestIsIgnorableError_MySQLTypedPath(t *testing.T) {
+	ignorable := []uint16{1050, 1060, 1061, 1062, 1091}
+	for _, n := range ignorable {
+		err := &mysql.MySQLError{Number: n, Message: "lokalisierte Fehlermeldung"}
+		if !IsIgnorableError(err) {
+			t.Errorf("MySQL 错误号 %d 应经类型化路径判为可忽略", n)
+		}
+	}
+	// 负例：致命错误号不得因文案巧合被放过（数字不匹配任何 needle）
+	for _, n := range []uint16{1064 /*syntax*/, 1146 /*no table*/, 1045 /*access denied*/} {
+		if IsIgnorableError(&mysql.MySQLError{Number: n, Message: "schwerer Fehler"}) {
+			t.Errorf("MySQL 错误号 %d 不应判为可忽略", n)
+		}
+	}
+	// 错误链穿透：gorm/调用方的 %w 包装层
+	wrapped := fmt.Errorf("exec ddl: %w", &mysql.MySQLError{Number: 1062, Message: "x"})
+	if !IsIgnorableError(wrapped) {
+		t.Error("errors 链上的 *MySQLError 应被命中")
+	}
+}
+
+// TestIsIgnorableError_PGTypedPath PG SQLSTATE 类型化路径（#96）：
+// 白名单码全命中、非白名单码（语法错/外键/权限）不误判。
+func TestIsIgnorableError_PGTypedPath(t *testing.T) {
+	for _, code := range []string{"42P07", "42P01", "42701", "42710", "23505"} {
+		if !IsIgnorableError(&fakePgError{code: code, msg: "lokalisierte Meldung"}) {
+			t.Errorf("SQLSTATE %s 应经类型化路径判为可忽略", code)
+		}
+	}
+	for _, code := range []string{"42601" /*syntax*/, "23503" /*fk*/, "42501" /*priv*/} {
+		if IsIgnorableError(&fakePgError{code: code, msg: "schwerer Fehler"}) {
+			t.Errorf("SQLSTATE %s 不应判为可忽略", code)
+		}
+	}
+	// 包装链穿透
+	wrapped := fmt.Errorf("migrate: %w", &fakePgError{code: "42P07", msg: "x"})
+	if !IsIgnorableError(wrapped) {
+		t.Error("errors 链上的 SQLStater 应被命中")
+	}
+}
+
+// TestIsIgnorableError_TypedMissDoesNotLeakIntoText 类型未命中时不得提前
+// 返回 false 绕过文案兜底——兜底是最后防线（sqlite 文案等仍依赖它）。
+func TestIsIgnorableError_TypedMissDoesNotLeakIntoText(t *testing.T) {
+	// 实现了 SQLState() 但码不在白名单，同时文案命中 needle：
+	// 兜底必须仍然生效。
+	err := &fakePgError{code: "99999", msg: "relation already exists (hypothetical)"}
+	if !IsIgnorableError(err) {
+		t.Error("类型化未命中不应吞掉文案兜底")
 	}
 }
