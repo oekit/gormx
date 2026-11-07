@@ -1,7 +1,9 @@
 package migrate
 
 import (
+	"bytes"
 	"fmt"
+	"log"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -259,5 +261,59 @@ func TestIsIgnorableError_TypedMissDoesNotLeakIntoText(t *testing.T) {
 	err := &fakePgError{code: "99999", msg: "relation already exists (hypothetical)"}
 	if !IsIgnorableError(err) {
 		t.Error("类型化未命中不应吞掉文案兜底")
+	}
+}
+
+// captureMigrateLog 重定向标准库 log 输出（logx Delegating 缺省后端），
+// 捕获 migrate 的 WARN 文案做断言。
+func captureMigrateLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	prev := log.Writer()
+	log.SetOutput(buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return buf
+}
+
+// TestRunDelimiterScriptWarnsRootCause（#104）：DELIMITER 脚本超出切分器
+// 能力（过程体分号被逐条拆出、必然语法报错）。fail-loud 之前必须先打
+// WARN 指明根因——否则消费方看到的是过程体第一句的语法错误，不会指向
+// 切分器局限。
+func TestRunDelimiterScriptWarnsRootCause(t *testing.T) {
+	db := openMigrateTestDB(t)
+	buf := captureMigrateLog(t)
+
+	script := "DELIMITER $$\n" +
+		"CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END$$\n" +
+		"DELIMITER ;\n"
+	opts := Options{
+		Target:  "mysql",
+		Install: []string{"proc.sql"},
+		FS:      fstest.MapFS{"ddl/mysql/proc.sql": &fstest.MapFile{Data: []byte(script)}},
+		Root:    "ddl",
+	}
+	// sqlite 下碎片执行报语法错误是预期（fail-loud）；断言的是 WARN 根因
+	// 提示先于/伴随失败出现。
+	_ = Run(db, opts)
+	if !strings.Contains(buf.String(), "DELIMITER") || !strings.Contains(buf.String(), "不支持 DELIMITER") {
+		t.Errorf("DELIMITER 脚本应打根因 WARN, got: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "proc.sql") {
+		t.Errorf("WARN 应携带脚本路径, got: %q", buf.String())
+	}
+}
+
+// TestSplitStatementsDelimiterNoStateMachine 固化当前行为（#104 文档口径）：
+// DELIMITER 指令不切状态，过程体分号被当作语句终止符——这是声明出的局限，
+// 不是隐性契约；将来若实现状态机，本用例应同步改写。
+func TestSplitStatementsDelimiterNoStateMachine(t *testing.T) {
+	script := "DELIMITER $$\nCREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END$$\nDELIMITER ;\n"
+	got := SplitStatements(script)
+	if len(got) < 3 {
+		t.Fatalf("无状态机时过程体应被分号切碎（当前声明行为）, got %#v", got)
+	}
+	first := strings.Fields(strings.TrimSpace(got[0]))
+	if len(first) == 0 || !strings.EqualFold(first[0], "DELIMITER") {
+		t.Errorf("首条碎片应以 DELIMITER 开头, got %#v", got[0])
 	}
 }

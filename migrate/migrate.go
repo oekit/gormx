@@ -5,6 +5,14 @@
 //   - 幂等兜底：重复键/列/索引、建表「已存在」类错误一律跳过；多列 ALTER TABLE
 //     ... ADD a, ADD b 失败时自动拆成单列逐条执行（MySQL 的多列 ADD 是原子的，
 //     直接跳过会漏掉真正需要新增的列）
+//
+// # 已知局限：不支持 DELIMITER / 存储过程脚本（#104）
+//
+// SplitStatements 按「引号外分号切分」工作，没有 DELIMITER 状态机——MySQL
+// 存储过程/触发器脚本（DELIMITER $$ ... END$$ DELIMITER ;）的过程体内分号
+// 会被当作语句终止符逐条拆出，必然语法报错导致迁移中止。此类脚本请经专用
+// 迁移通道；执行中命中 DELIMITER 指令时打 WARN 指明根因（否则消费方看到的
+// 是过程体第一句的语法错误，不会指向切分器局限）。
 package migrate
 
 import (
@@ -63,12 +71,28 @@ func execScript(d *gorm.DB, opts Options, script string) error {
 	logx.Delegating("gormx.migrate").Info("执行数据库脚本", "script", path)
 
 	stmts := SplitStatements(string(content))
+	warnedDelimiter := false
 	for i, stmt := range stmts {
+		// DELIMITER 指令出现 = 脚本面超出切分器能力（#104）：fail-loud 之前
+		// 先把根因说清楚——后续碎片执行报的是过程体语法错误，不指向这里。
+		if !warnedDelimiter && isDelimiterDirective(stmt) {
+			logx.Delegating("gormx.migrate").Warn(
+				"脚本含 DELIMITER 指令：SplitStatements 不支持 DELIMITER/存储过程脚本（过程体内的分号会被当作语句终止符逐条拆出、必然语法报错）——此类脚本请经专用迁移通道处理",
+				"script", path)
+			warnedDelimiter = true
+		}
 		if err := execStatement(d, path, i+1, stmt); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// isDelimiterDirective 报告语句是否以 DELIMITER 指令开头（MySQL 客户端指令，
+// 大小写不敏感）。它不是 SQL 语句——出现即说明脚本依赖 DELIMITER 语义。
+func isDelimiterDirective(stmt string) bool {
+	fields := strings.Fields(strings.TrimSpace(stmt))
+	return len(fields) > 0 && strings.EqualFold(fields[0], "DELIMITER")
 }
 
 // execStatement 执行单条 SQL，必要时做幂等降级。
@@ -325,6 +349,9 @@ func mysqlErrorNumberOne(err error) (uint16, bool) {
 //   - `--` 行注释、`/* */` 块注释被剥离（随语句一起丢弃）
 //   - 单引号 / 双引号 / 反引号内的分号不切分（反斜杠转义引号可正确跳过）
 //   - 以 `;` 结尾为一条语句；空语句丢弃
+//
+// ⚠️ 不支持 DELIMITER / 存储过程脚本（#104，见包文档「已知局限」）：
+// 没有 DELIMITER 状态机，过程体内的分号会被当作语句终止符逐条拆出。
 func SplitStatements(content string) []string {
 	var statements []string
 	var code strings.Builder
