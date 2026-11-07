@@ -1,3 +1,22 @@
+## [v0.11.3] — 2026-11-07
+
+- feat(datatypes): 新子包——JSONSlice[T]/JSONMap[K,V] 泛型 JSON 列类型，Scan/Value 五件套收编，nil↔NULL 与空集合可区分（#80）
+- feat(subquery): SubqueryIn/DeleteBySubquery 方言安全子查询 DML 构造器——MySQL 1093 自动派生表包装，含批量 CAS 认领 recipe（#81）
+- fix(pagination): Paginate 无 ORDER BY 时按主键注入 tiebreaker——OFFSET/LIMIT 无序未定义关闭（#95）
+- fix(migrate): IsIgnorableError 类型化判定——MySQL 错误号/PG SQLSTATE 优先，纯文案匹配降为兜底（#96）
+- fix(gorm): 连接池 WARN 区分「未传 option」与「显式传 0」——显式配置零值不再被误导成漏配（#97）
+- feat(migrate): Options.LockKey——非空时全量执行包进 RunWithAdvisoryLock，多副本 DDL 串行化一等公民（#98）
+- fix(singleton): SingletonRepo 收敛判据改 IsUniqueViolation——sqlite/未开 TranslateError 下收敛不再失效（#99）
+- fix(crud): Where/Or 字段名标识符白名单校验——白名单外 fail-closed（#100）
+- fix(pagination): Paginate 不再原地 Normalize 调用方共享 PageRequest——只读副本计算（#101）
+- feat(scoper): 新子包——Rule[T] 单源驱动 SQL WHERE 面与内存 Allows 面，行级 scope 双轨关闭（#102）
+- feat(pagination): gormx.Page 参数类型——NormalizePage+Offset/Limit/Scope/Request 一体（#103）
+- docs(migrate): SplitStatements DELIMITER 局限声明 + 命中 DELIMITER 打根因 WARN（#104）
+- feat(patch): SavePatch[M] 指针字段补丁部分更新——nil 不触碰、显式零值可写，Save 清零/手搓 updates map 两难消灭（#105）
+- feat(logger): WithRedactColumns 列级脱敏 + Open godoc「Info=含值」警示——敏感列不再随 SQL 日志外泄（#106）
+
+关联问题单：gormx#80、gormx#81、gormx#95、gormx#96、gormx#97、gormx#98、gormx#99、gormx#100、gormx#101、gormx#102、gormx#103、gormx#104、gormx#105、gormx#106。
+
 ## [v0.11.2] — 2026-11-06
 
 - build: 矩阵依赖地板对齐（维护轮 #233）
