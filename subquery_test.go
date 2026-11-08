@@ -197,3 +197,43 @@ func TestSubqueryIn_ArgumentErrors(t *testing.T) {
 		t.Errorf("nil subquery 应报错, got %v", tx.Error)
 	}
 }
+
+// TestSubqueryIn_ColumnIdentifierWhitelist #122 回归：column 须过标识符
+// 白名单（#100 同款纪律）fail-closed——mysql 派生表路径经 Select(string)
+// 原样渲染，白名单外的值（逗号多列/括号表达式/子查询）此前会被原样拼进
+// `SELECT <column> FROM (...) AS gormx_dt` 的裸拼面。issue 探针原样：
+// column="id, (SELECT password FROM users LIMIT 1)" 必须报错且 SQL 零泄漏。
+func TestSubqueryIn_ColumnIdentifierWhitelist(t *testing.T) {
+	db := openDryRunMySQL(t)
+	injections := []string{
+		"id, (SELECT password FROM users LIMIT 1)", // issue 探针：表达式/子查询
+		"id); DROP TABLE users; --",                // 括号闭合 + 语句拼接
+		"id OR 1=1",                                // 空格表达式
+		"id ASC, password",                         // 多列
+		"`id`",                                     // 反引号自引用
+		`"id"`,                                     // 双引号包裹
+	}
+	for _, col := range injections {
+		sub := db.Model(&sweepLog{}).Select("id").Where("state = ?", "finished")
+		tx := SubqueryIn(db.Model(&sweepLog{}), col, sub)
+		if tx.Error == nil {
+			t.Errorf("column %q 应被白名单拒绝（fail-closed）", col)
+			continue
+		}
+		if !strings.Contains(tx.Error.Error(), "identifier") {
+			t.Errorf("column %q 的报错应点明白名单: %v", col, tx.Error)
+		}
+		if sql := tx.Statement.SQL.String(); strings.Contains(sql, "password") || strings.Contains(sql, "DROP") {
+			t.Errorf("column %q 的注入片段泄漏进 SQL: %s", col, sql)
+		}
+	}
+
+	// 白名单内形态照常工作：裸列名、表限定名不拒（与 crud Where/Or 同宽）。
+	for _, col := range []string{"id", "t.id", "_col2"} {
+		sub := db.Model(&sweepLog{}).Select("id").Where("state = ?", "finished")
+		tx := SubqueryIn(db.Model(&sweepLog{}), col, sub)
+		if tx.Error != nil {
+			t.Errorf("column %q 应过白名单, got %v", col, tx.Error)
+		}
+	}
+}

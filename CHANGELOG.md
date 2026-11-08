@@ -1,5 +1,12 @@
 
 
+## [v0.11.7] — 2026-11-08
+
+- fix(subquery): SubqueryIn/DeleteBySubquery 的 column 参数过标识符白名单 fail-closed（#122，与 crud Where/Or 的 #100 同款纪律）——mysql 派生表路径经 Select(string) 原样渲染，白名单外的值（逗号多列/括号表达式/子查询）此前会被原样拼进 `SELECT <column> FROM (...) AS gormx_dt` 的裸拼面；白名单 `^[A-Za-z_][A-Za-z0-9_.]*$`（含表限定名），拒绝时经 AddError 报错且 SQL 零泄漏
+- test(migrate): 测试库 DSN 加 uuid 轮次唯一后缀（#117，同根包 newTestDB 先例）——此前 DSN 只按 t.Name() 命名 + cache=shared：共享缓存内存库进程存活期内同 DSN 指向同一个库、t.Name() 在 -count=N 下每轮相同 ⇒ 第二轮撞第一轮残留数据（UNIQUE constraint failed，3 用例恒红）；本版起 migrate 包 -count=2 全绿
+
+关联问题单：gormx#117、gormx#122。
+
 ## [v0.11.6] — 2026-11-08
 
 - build: 依赖地板对齐——本版把 oekit 依赖地板抬到各依赖当前最新已发布版本（matrix-tools/scripts/align_floors.py 维护轮）
