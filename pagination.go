@@ -49,8 +49,8 @@ func Paginate[T any](db *gorm.DB, req *pagination.PageRequest, queryFn func(db *
 		baseDB = baseDB.Model(new(T))
 	}
 
-	var total int64
-	if err := baseDB.Count(&total).Error; err != nil {
+	total, err := countDroppingSelects(baseDB)
+	if err != nil {
 		return nil, err
 	}
 
@@ -83,6 +83,32 @@ func Paginate[T any](db *gorm.DB, req *pagination.PageRequest, queryFn func(db *
 func normalizePageParams(page, pageSize int) (int, int) {
 	p := pagination.Policy{}
 	return p.Normalize(page, pageSize)
+}
+
+// countDroppingSelects 执行 Count 并在**计数语句**上丢弃 Selects（#136）。
+// GORM 的 Count 在 Statement.Selects 非空时生成 `COUNT(<列>)` 而非 count(*)
+// ⇒ 目标列为 NULL 的行不计入 total（3 行含 1 行 name IS NULL ⇒ total 报 2），
+// Total 与实际返回条数在同一响应里自相矛盾、Pages 偏一（下一页永远取不到
+// 数据）。计数的语义是「行数」，与查哪些列无关——与 gormrepo.countStatement
+// 的「计数路径一律丢弃 Selects」同一口径（gormx 根包不能反向 import gormrepo，
+// 口径在此就地复刻，两处注释互指，防再漂移）。
+//
+// 实现说明：baseDB 的 Statement 在 GORM 链式语义下与 find 路径共享（clone==0
+// 的语句方法就地改写），经 Session 转手后再改字段会在克隆发生前污染共享
+// 语句（issue 建议的 `Session(&Session{}); st.Selects = nil` 即踩此坑——
+// find 路径的投影会被一并清掉）——故采用「置空 → Count → 还原」的窗口式
+// 改写，与 gorm Count 内部对 SELECT 子句的借用-还原模式同款；Count 返回
+// （或 panic，经 defer）后语句恢复原状，find 路径的投影不受影响。
+func countDroppingSelects(db *gorm.DB) (int64, error) {
+	var total int64
+	st := db.Statement
+	if st == nil || len(st.Selects) == 0 {
+		return total, db.Count(&total).Error
+	}
+	saved := st.Selects
+	st.Selects = nil
+	defer func() { st.Selects = saved }()
+	return total, db.Count(&total).Error
 }
 
 // hasOrderBy 检测语句是否已带 ORDER BY 子句。

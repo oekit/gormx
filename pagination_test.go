@@ -172,6 +172,103 @@ func TestPaginate_TiebreakNoSchemaSkipped(t *testing.T) {
 	}
 }
 
+// ---- #136：Count 未丢弃 Selects ⇒ COUNT(<列>) 漏计 NULL 行 ----
+
+// nullableRow 是 #136 回归模型：Name 可空——COUNT(name) 不计 NULL 行，
+// count(*) 才是「行数」口径。
+type nullableRow struct {
+	BaseModel
+	Name *string
+}
+
+// TestPaginate_CountDropsSelects 回归（#136）：带 Select("name") 的分页，
+// Count 不得作用在选中列上——GORM 在 Statement.Selects 非空时生成
+// COUNT(<列>) 而非 count(*)，目标列为 NULL 的行不计入 total ⇒ 同一响应里
+// Total=2 而 len(Items)=3 自相矛盾、Pages 偏一（第 2 页永远取不到数据）。
+// 修复后计数语句丢弃 Selects（与 gormrepo.countStatement 同一口径），
+// find 路径的投影不受影响。
+func TestPaginate_CountDropsSelects(t *testing.T) {
+	db := newTestDB(t, &nullableRow{})
+	a, c := "a", "c"
+	for _, r := range []*nullableRow{{Name: &a}, {}, {Name: &c}} {
+		if err := db.Create(r).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resp, err := Paginate[nullableRow](db, pagination.NewPageRequest(1, 10), func(db *gorm.DB) *gorm.DB {
+		return db.Model(&nullableRow{}).Select("name")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 3 {
+		t.Errorf("Total = %d, want 3（COUNT(name) 漏计 NULL 行即 #136 复发）", resp.Total)
+	}
+	if len(resp.Items) != 3 {
+		t.Errorf("len(Items) = %d, want 3", len(resp.Items))
+	}
+	if resp.Pages != 1 {
+		t.Errorf("Pages = %d, want 1（Pages 按 Total 计算，偏一即 #136 复发）", resp.Pages)
+	}
+	// NULL 行仍在结果集里：投影列本列为 NULL 的行照常返回
+	nullCount := 0
+	for _, it := range resp.Items {
+		if it.Name == nil {
+			nullCount++
+		}
+	}
+	if nullCount != 1 {
+		t.Errorf("NULL name 行数 = %d, want 1（find 结果不应受计数语句改写影响）", nullCount)
+	}
+}
+
+// TestPaginate_CountDropsSelects_WithWhere #136 的 Select+Where 组合形态
+// （issue 实测矩阵之一）：条件过滤与投影共存时计数同样不得漏计 NULL 行。
+func TestPaginate_CountDropsSelects_WithWhere(t *testing.T) {
+	db := newTestDB(t, &nullableRow{})
+	a, c := "a", "c"
+	for _, r := range []*nullableRow{{Name: &a}, {}, {Name: &c}} {
+		if err := db.Create(r).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resp, err := Paginate[nullableRow](db, pagination.NewPageRequest(1, 10), func(db *gorm.DB) *gorm.DB {
+		return db.Model(&nullableRow{}).Select("name").Where("id > 0")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 3 || len(resp.Items) != 3 {
+		t.Errorf("Total = %d len(Items) = %d, want 3/3（#136 复发）", resp.Total, len(resp.Items))
+	}
+}
+
+// TestPaginate_CountThenFind_ProjectionPreserved 计数借还窗口的护栏：Count
+// 结束后 find 路径仍按调用方的 Selects 投影执行——共享语句在计数后必须
+// 恢复原状（Selects 还原），否则单列查询会悄悄退化成全列扫描。
+func TestPaginate_CountThenFind_ProjectionPreserved(t *testing.T) {
+	db := newTestDB(t, &nullableRow{})
+	a := "a"
+	if err := db.Create(&nullableRow{Name: &a}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := Paginate[nullableRow](db, pagination.NewPageRequest(1, 10), func(db *gorm.DB) *gorm.DB {
+		return db.Model(&nullableRow{}).Select("name")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].Name == nil || *resp.Items[0].Name != "a" {
+		t.Errorf("投影列取值异常: %+v", resp.Items)
+	}
+	if resp.Items[0].ID != 0 {
+		t.Errorf("find 应仍按 Select(\"name\") 投影（ID 不应被扫入）, got ID=%d", resp.Items[0].ID)
+	}
+}
+
 // ---- #103：Page 参数类型（Normalize + Offset + Limit 一体） ----
 
 func TestNormalizePage_Defaults(t *testing.T) {
