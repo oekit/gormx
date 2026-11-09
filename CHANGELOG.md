@@ -1,5 +1,12 @@
 
 
+## [v0.11.8] — 2026-11-10
+
+- - fix(pagination): Paginate 计数语句丢弃 Selects——total 与实际返回条数一致，页数不再整体偏一（#136）
+- - feat(crud): Query.Err() 累计 fail-closed 渲染错误 + Query.Strict() 渲染 1=0 当场 panic——恒假条件对调用方可见（#135）
+
+关联问题单：gormx#135、gormx#136。
+
 ## [v0.11.7] — 2026-11-08
 
 - fix(subquery): SubqueryIn/DeleteBySubquery 的 column 参数过标识符白名单 fail-closed（#122，与 crud Where/Or 的 #100 同款纪律）——mysql 派生表路径经 Select(string) 原样渲染，白名单外的值（逗号多列/括号表达式/子查询）此前会被原样拼进 `SELECT <column> FROM (...) AS gormx_dt` 的裸拼面；白名单 `^[A-Za-z_][A-Za-z0-9_.]*$`（含表限定名），拒绝时经 AddError 报错且 SQL 零泄漏
