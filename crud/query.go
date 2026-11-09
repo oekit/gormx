@@ -1,6 +1,7 @@
 package crud
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -53,6 +54,12 @@ type Query struct {
 	groupBy   string
 	page      *pagination.PageRequest
 	forUpdate bool
+	// strict 是 #135 的严格模式标记：fail-closed 渲染发生时立即 panic
+	// （把「静默失效」变「当场爆炸」），见 Strict。
+	strict bool
+	// failClosedErrs 累计链上每一次 fail-closed 渲染（#135 信号面），
+	// 经 Err() 读出；无论是否开启 strict 都累计。
+	failClosedErrs []error
 }
 
 // NewQuery 创建查询构建器。
@@ -177,6 +184,48 @@ func buildCondition(field, op string, value []any) (query string, args []any, ok
 // 恒为假，保证过滤器不被静默丢弃（fail-closed，绝不 fail-open）。
 const failClosedCondition = "1=0"
 
+// recordFailClosed 记录一次 fail-closed 渲染（#135 信号面）。数据安全面维持
+// 既有纪律（条件渲染为恒假 1=0，绝不 fail-open）——调用点必须先把恒假条件
+// 追加进链再调本方法，宿主即使 recover 了严格模式的 panic，渲染结果仍安全；
+// 本方法只补调用方信号面：无论是否开启严格模式都累计进 Err()（宿主可在
+// 启动期把 repo 装配层的条件全量过一遍校验），Strict() 开启时立即 panic
+// （把「静默失效」变「当场爆炸」，供开发/CI 环境使用）。
+func (q *Query) recordFailClosed(reason string) {
+	err := errors.New(reason)
+	q.failClosedErrs = append(q.failClosedErrs, err)
+	if q.strict {
+		panic(err)
+	}
+}
+
+// Strict 开启严格模式（#135）：链上任何一处条件无法识别而 fail-closed 渲染
+// 为恒假 1=0 时立即 panic——把「静默失效」变「当场爆炸」。供开发/CI 环境在
+// 启动期或单测里把 repo 装配层的条件全量过一遍校验（典型场景：反引号保留字
+// 列名误传入 Where，升级后静默变 WHERE 1=0、接口全线 not-found——严格模式
+// 下当场 panic 指明 field/op）；生产环境不要开启（fail-closed 渲染仍是数据
+// 安全面的最后防线，严格模式只补信号面）。
+//
+// 严格模式随 WhereGroup/OrGroup 透传进组内子 Query；无论是否开启，每次
+// fail-closed 渲染都经 Err() 可读。链式方法返回 *Query 自身，可与既有链混用：
+//
+//	q := crud.NewQuery().Strict().Where("account_id", "=", 7)
+func (q *Query) Strict() *Query {
+	q.strict = true
+	return q
+}
+
+// Err 返回链上累计的 fail-closed 错误（nil = 所有条件都合法可识别）。
+// 无论是否 Strict 都累计——调用方可在不开启 panic 的前提下于启动期/单测
+// 把 repo 装配层的条件全量过一遍校验（#135）：渲染 1=0 时行为与「字段合法
+// 但值不匹配」不可区分是问题根源，本出口把两者区分开。多条错误 errors.Join
+// 合并，信息指明出问题的 field/op 与处置建议（保留字列名走 WhereRaw）。
+func (q *Query) Err() error {
+	if len(q.failClosedErrs) == 0 {
+		return nil
+	}
+	return errors.Join(q.failClosedErrs...)
+}
+
 // Where 添加 AND 条件。支持的操作符（白名单）:
 //
 //	q.Where("name", "=", "test")
@@ -189,15 +238,19 @@ const failClosedCondition = "1=0"
 //	q.Where("age", "BETWEEN", 18, 65)       // 两个连续变参
 //	q.Where("age", "BETWEEN", []any{18, 65}) // len==2 切片
 //
-// field 必须是标识符白名单内的列名（^[A-Za-z_][A-Za-z0-9_.]*$，含表限定名）：
-// field 会拼入 SQL 片段，前端可控的「筛选/排序字段名」透传进来就是 SQL 注入。
+// field 必须是标识符白名单内的**裸标识符**（^[A-Za-z_][A-Za-z0-9_.]*$，含
+// 表限定名）：field 会拼入 SQL 片段，前端可控的「筛选/排序字段名」透传进来
+// 就是 SQL 注入。**保留字/反引号列名（如 `key`）不在白名单内**——需要引用
+// 保留字时请走 WhereRaw（占位符参数化，见其文档），不要给 field 加反引号。
 // 白名单外的字段名、未知操作符、非法的 BETWEEN/NOT BETWEEN 值形状一律
 // fail-closed：条件渲染为恒假的 1=0（绝不静默丢弃 —— 丢弃租户/权限过滤
-// 会造成数据暴露）。
+// 会造成数据暴露）；渲染发生时经 Err() 累计、Strict() 模式下当场 panic
+// （#135 信号面——否则恒假条件与「字段合法但值不匹配」不可区分）。
 func (q *Query) Where(field, op string, value ...any) *Query {
 	query, args, ok := buildCondition(field, op, value)
 	if !ok {
 		q.conds = append(q.conds, Condition{Query: failClosedCondition})
+		q.recordFailClosed(fmt.Sprintf("crud: Where(%q, %q) 未通过字段/操作符白名单，已 fail-closed 渲染为恒假 %s（保留字/反引号列名请走 WhereRaw 占位符参数化，field 仅接受裸标识符）", field, op, failClosedCondition))
 		return q
 	}
 	q.conds = append(q.conds, Condition{Query: query, Args: args})
@@ -210,11 +263,13 @@ func (q *Query) Where(field, op string, value ...any) *Query {
 //	// => WHERE status = 1 OR priority > 5
 //
 // 与 Where 相同的字段名标识符白名单、操作符白名单与值形状约束；无法识别的
-// OR 分支同样 fail-closed 渲染为 1=0（该分支不命中任何行），绝不静默丢弃。
+// OR 分支同样 fail-closed 渲染为 1=0（该分支不命中任何行），绝不静默丢弃；
+// 渲染发生时经 Err() 累计、Strict() 模式下当场 panic（#135，同 Where）。
 func (q *Query) Or(field, op string, value ...any) *Query {
 	query, args, ok := buildCondition(field, op, value)
 	if !ok {
 		q.orConds = append(q.orConds, Condition{Query: failClosedCondition})
+		q.recordFailClosed(fmt.Sprintf("crud: Or(%q, %q) 未通过字段/操作符白名单，已 fail-closed 渲染为恒假 %s（保留字/反引号列名请走 WhereRaw 占位符参数化，field 仅接受裸标识符）", field, op, failClosedCondition))
 		return q
 	}
 	q.orConds = append(q.orConds, Condition{Query: query, Args: args})
@@ -227,15 +282,22 @@ func (q *Query) Or(field, op string, value ...any) *Query {
 // 显式声明，避免把 raw 表达式塞进 field 造成占位符与参数错位漏绑。片段自动
 // 包一层括号（参数绑定不变），片段内部的 OR 不会击穿 AND 链优先级。
 //
+// **保留字/反引号列名的正道**（#135）：Where 的 field 仅接受裸标识符，
+// 把带反引号的保留字列名（`key`）传给 Where 会静默渲染为恒假 1=0；
+// 保留字列名应走 WhereRaw（`key` = ? 的片段形态）——片段自带 ?，值仍走
+// 占位符参数化。
+//
 // sql 是调用方审计过的可信 SQL 片段（值仍走占位符参数化，禁止把外部输入
 // 拼进 sql 本身）；占位符数量与 args 的对应由调用方保证。空片段无法解析，
-// fail-closed 渲染为恒假的 1=0（与未知操作符同一纪律）。
+// fail-closed 渲染为恒假的 1=0（与未知操作符同一纪律），经 Err() 累计、
+// Strict() 模式下当场 panic（#135）。
 //
 //	q.WhereRaw("expire_date IS NULL OR expire_date > ?", now)
 //	// => WHERE (expire_date IS NULL OR expire_date > ?)
 func (q *Query) WhereRaw(sql string, args ...any) *Query {
 	if strings.TrimSpace(sql) == "" {
 		q.conds = append(q.conds, Condition{Query: failClosedCondition})
+		q.recordFailClosed(fmt.Sprintf("crud: WhereRaw 收到空片段，已 fail-closed 渲染为恒假 %s", failClosedCondition))
 		return q
 	}
 	q.conds = append(q.conds, Condition{Query: "(" + sql + ")", Args: args})
@@ -248,6 +310,9 @@ func (q *Query) WhereRaw(sql string, args ...any) *Query {
 // 条件间 AND、Or 分支整体 OR），渲染为单个带括号条件并入 AND 链 —— 组内 OR
 // 不会击穿链上其它过滤（此前只能全局 Or，SQL 恒为 (A AND B) OR C）。
 //
+// 组内 fail-closed 与顶层同口径（#135）：Strict() 开启时组内坏条件同样当场
+// panic，Err() 同样把组内的 fail-closed 渲染并入父链。
+//
 // fn 返回 nil 时按传入的子 Query 处理；组内未添加任何条件时为 no-op
 // （与条件为 false 时跳过的语义一致，不凭空加恒假条件）。
 //
@@ -257,7 +322,7 @@ func (q *Query) WhereRaw(sql string, args ...any) *Query {
 //	    })
 //	// => WHERE account_id = ? AND (status = ? OR name LIKE ?)
 func (q *Query) WhereGroup(fn func(g *Query) *Query) *Query {
-	if c, ok := buildGroup(fn); ok {
+	if c, ok := buildGroup(q, fn); ok {
 		q.conds = append(q.conds, c)
 	}
 	return q
@@ -272,7 +337,7 @@ func (q *Query) WhereGroup(fn func(g *Query) *Query) *Query {
 //	    })
 //	// => WHERE account_id = ? OR (status = ? AND name LIKE ?)
 func (q *Query) OrGroup(fn func(g *Query) *Query) *Query {
-	if c, ok := buildGroup(fn); ok {
+	if c, ok := buildGroup(q, fn); ok {
 		q.orConds = append(q.orConds, c)
 	}
 	return q
@@ -280,13 +345,17 @@ func (q *Query) OrGroup(fn func(g *Query) *Query) *Query {
 
 // buildGroup 在独立子 Query 上执行 fn，把组内条件物化为单个带括号条件。
 // 返回 ok=false 表示组内没有任何条件（空组为 no-op，不向链上追加条件）。
-func buildGroup(fn func(g *Query) *Query) (Condition, bool) {
+// 父链的 strict 标记透传进组内子 Query、组内的 fail-closed 错误并入父链
+// （#135：组内坏条件与顶层同口径，信号面不因分组而丢失）。
+func buildGroup(parent *Query, fn func(g *Query) *Query) (Condition, bool) {
 	g := NewQuery()
+	g.strict = parent.strict
 	if fn != nil {
 		if ret := fn(g); ret != nil {
 			g = ret
 		}
 	}
+	parent.failClosedErrs = append(parent.failClosedErrs, g.failClosedErrs...)
 	return g.groupCondition()
 }
 

@@ -1,6 +1,9 @@
 package crud
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestQuerySpec_Assembly 验证中性 Spec 物化：AND/OR/排序/预加载/分页/锁
 // 各字段按链式调用顺序收集，值全部占位符参数化。
@@ -281,5 +284,123 @@ func TestQuerySpec_FieldIdentifierAllowed(t *testing.T) {
 	injected := NewQuery().Where("tags) > 0 OR (1", "FIND_IN_SET", "go").Spec().Conds[0]
 	if injected.Query != failClosedCondition {
 		t.Errorf("FIND_IN_SET 字段注入应 fail-closed, got %q", injected.Query)
+	}
+}
+
+// ---- #135：fail-closed 渲染的调用方信号面（Err 累计 + Strict 当场爆炸） ----
+
+// TestQuery_Err_AccumulatesFailClosed 回归（#135）：反引号保留字列名（zeus
+// iam GetByKey 的 `key` 形态）等白名单外字段此前静默渲染成恒假 1=0、
+// 无任何信号——行为与「字段合法但值不匹配」不可区分，下游只能靠既有单测或
+// 逐仓人工 grep 排查。修复后 Err() 把每次 fail-closed 渲染累计为带 field/op
+// 的错误，宿主可在启动期把 repo 装配层的条件全量过一遍校验；数据安全面不变
+// （条件仍渲染恒假 1=0）。
+func TestQuery_Err_AccumulatesFailClosed(t *testing.T) {
+	q := NewQuery().
+		Where("`key`", "=", "v1"). // 反引号保留字列名（下游实证形态）
+		Where("name", "=", "ok").  // 合法条件不受影响
+		Or("b@d", ">", 2)          // 注入载荷
+
+	err := q.Err()
+	if err == nil {
+		t.Fatal("Err() 应返回累计的 fail-closed 错误（#135）")
+	}
+	msg := err.Error()
+	for _, want := range []string{"`key`", "b@d", failClosedCondition, "WhereRaw"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("Err() 信息应提及 %q, got %v", want, msg)
+		}
+	}
+
+	// 数据安全面不变：坏条件仍渲染恒假 1=0，合法条件照常
+	spec := q.Spec()
+	if len(spec.Conds) != 2 {
+		t.Fatalf("conds = %d, want 2（坏条件 + 合法条件）", len(spec.Conds))
+	}
+	if spec.Conds[0].Query != failClosedCondition {
+		t.Errorf("坏条件应渲染 %s, got %q", failClosedCondition, spec.Conds[0].Query)
+	}
+	if spec.Conds[1].Query != "name = ?" {
+		t.Errorf("合法条件不应受影响, got %q", spec.Conds[1].Query)
+	}
+	if len(spec.OrConds) != 1 || spec.OrConds[0].Query != failClosedCondition {
+		t.Errorf("Or 分支坏条件应渲染 1=0, got %+v", spec.OrConds)
+	}
+}
+
+// TestQuery_Err_NilWhenAllValid 对照组：全部条件合法时 Err() 为 nil，
+// 既有调用方零感知。
+func TestQuery_Err_NilWhenAllValid(t *testing.T) {
+	q := NewQuery().
+		Where("name", "=", "x").
+		Where("t.col", "IN", []int{1, 2}).
+		Or("age", ">", 18).
+		WhereRaw("expire_date IS NULL OR expire_date > ?", "2030-01-01").
+		WhereGroup(func(g *Query) *Query {
+			return g.Where("status", "=", "ok")
+		})
+	if err := q.Err(); err != nil {
+		t.Errorf("Err() = %v, want nil（全部条件合法）", err)
+	}
+}
+
+// TestQuery_Strict_PanicsOnUnrecognizableField 严格模式（#135 建议 1）：
+// 开发/CI 环境开启即把「静默失效」变「当场爆炸」——panic 携带的错误指明
+// 出问题的 field/op。
+func TestQuery_Strict_PanicsOnUnrecognizableField(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("Strict 模式下坏条件应 panic（#135）")
+		}
+		err, ok := r.(error)
+		if !ok || !strings.Contains(err.Error(), "`key`") {
+			t.Fatalf("panic 应携带提及 field 的错误, got %v", r)
+		}
+	}()
+	NewQuery().Strict().Where("`key`", "=", "v1")
+}
+
+// TestQuery_Strict_GroupPropagates 组内坏条件同口径：Strict 随 WhereGroup
+// 透传进组内子 Query——组内坏条件同样当场 panic，信号面不因分组而丢失。
+func TestQuery_Strict_GroupPropagates(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("Strict 模式下组内坏条件应 panic（#135）")
+		}
+	}()
+	NewQuery().Strict().Where("account_id", "=", 7).WhereGroup(func(g *Query) *Query {
+		return g.Where("`key`", "=", "v1")
+	})
+}
+
+// TestQuery_Err_PropagatesFromGroup 非 Strict 的组内信号面：组内 fail-closed
+// 渲染并入父链 Err()，宿主的启动期校验一次覆盖全链（含分组）；组内坏条件
+// 渲染出的恒假条件仍带括号并入 AND 链（fail-closed 渲染不变）。
+func TestQuery_Err_PropagatesFromGroup(t *testing.T) {
+	q := NewQuery().WhereGroup(func(g *Query) *Query {
+		return g.Where("1bad", "=", 1)
+	})
+	err := q.Err()
+	if err == nil {
+		t.Fatal("组内 fail-closed 渲染应并入父链 Err()（#135）")
+	}
+	if !strings.Contains(err.Error(), "1bad") {
+		t.Errorf("Err() 应提及组内出问题的 field, got %v", err)
+	}
+	if got := q.Spec().Conds[0].Query; got != "("+failClosedCondition+")" {
+		t.Errorf("组内坏条件应渲染为 (%s), got %q", failClosedCondition, got)
+	}
+}
+
+// TestQuery_Err_WhereRawEmpty WhereRaw 空片段同样有信号面（与未知操作符
+// 同一纪律）。
+func TestQuery_Err_WhereRawEmpty(t *testing.T) {
+	q := NewQuery().WhereRaw("   ")
+	if err := q.Err(); err == nil {
+		t.Fatal("WhereRaw 空片段应计入 Err()（#135）")
+	}
+	if got := q.Spec().Conds[0].Query; got != failClosedCondition {
+		t.Errorf("cond = %q, want %s", got, failClosedCondition)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/oekit/gormx/crud"
+	"github.com/oekit/pkg/pagination"
 	"gorm.io/gorm"
 )
 
@@ -98,5 +99,30 @@ func TestExists_SelectsMustNotPolluteCount(t *testing.T) {
 	}
 	if !ok {
 		t.Fatal("Exists = false，期望 true")
+	}
+}
+
+// TestPaginateList_SelectsMustNotPolluteCount 回归（#136）：PaginateList 经
+// gormx.Paginate 计数，此前 Count 直接作用在带 Selects 的语句上——GORM 生成
+// COUNT(<列>) 而非 count(*)，目标列为 NULL 的行不计入 total ⇒ 同一个
+// Select("name") 查询，repo.List（countStatement 口径）得 total=3、
+// PaginateList 得 Total=2，且同一响应里 Total=2 而 len(Items)=3 自相矛盾、
+// Pages 偏一（第 2 页永远取不到数据、「共 N 条」文案失真）。修复后 Paginate
+// 的计数语句丢弃 Selects，同仓两条分页路径口径归一。
+func TestPaginateList_SelectsMustNotPolluteCount(t *testing.T) {
+	_, db := setupCountDB(t)
+
+	resp, err := PaginateList[testUser](db, pagination.NewPageRequest(1, 10), crud.NewQuery().Select("name"))
+	if err != nil {
+		t.Fatalf("PaginateList: %v", err)
+	}
+	if resp.Total != 3 {
+		t.Fatalf("Total = %d, want 3（COUNT(name) 漏计 NULL 行即 #136 复发）", resp.Total)
+	}
+	if len(resp.Items) != 3 {
+		t.Fatalf("len(Items) = %d, want 3（Total 与实际返回条数不一致）", len(resp.Items))
+	}
+	if resp.Pages != 1 {
+		t.Fatalf("Pages = %d, want 1（Pages 按 Total 计算，偏一即 #136 复发）", resp.Pages)
 	}
 }
