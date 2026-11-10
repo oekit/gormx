@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/google/uuid v1.6.0
-	github.com/oekit/logx v0.9.0
+	github.com/oekit/logx v0.9.1
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/gorm v1.31.2
 )
