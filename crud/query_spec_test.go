@@ -517,3 +517,39 @@ func TestQuery_Strict_PanicsOnInjectedOrder(t *testing.T) {
 	}()
 	NewQuery().Strict().Order("id; DROP TABLE users; --")
 }
+
+// TestQuery_Page_NormalizesAtEntry（#155）：分页入口归一——GetPage/Spec.Page
+// 回写生效值，与仓储层 Offset()/Limit() 的归一口径一致（信封不再按原始
+// 0/0「未分页」谎报）。
+func TestQuery_Page_NormalizesAtEntry(t *testing.T) {
+	cases := []struct {
+		name               string
+		page, size         int
+		wantPage, wantSize int
+	}{
+		{"0/0 按缺省归一", 0, 0, 1, 20},
+		{"负值按缺省归一", -3, -1, 1, 20},
+		{"页长超上限钳到 500", 1, 1000, 1, 500},
+		{"合法值原样", 2, 30, 2, 30},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := NewQuery().Page(tc.page, tc.size)
+			p := q.GetPage()
+			if p == nil {
+				t.Fatal("GetPage() = nil")
+			}
+			if p.Page != tc.wantPage || p.PageSize != tc.wantSize {
+				t.Errorf("GetPage() = (%d, %d), want (%d, %d)", p.Page, p.PageSize, tc.wantPage, tc.wantSize)
+			}
+			spec := q.Spec()
+			if spec.Page == nil || spec.Page.Page != tc.wantPage || spec.Page.PageSize != tc.wantSize {
+				t.Errorf("spec.Page = %+v, want (%d, %d)", spec.Page, tc.wantPage, tc.wantSize)
+			}
+			// 与仓储层 LIMIT/OFFSET 换算一致（信封回写值 = 实际生效值）
+			if p.Limit() != tc.wantSize {
+				t.Errorf("Limit() = %d, want %d", p.Limit(), tc.wantSize)
+			}
+		})
+	}
+}

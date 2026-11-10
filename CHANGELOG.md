@@ -6,6 +6,10 @@
 
 关联问题单：oekit/gormx#154。
 
+- fix(crud): Page 入口归一，响应信封与实际 LIMIT/OFFSET 口径一致（#155）——Page(0, 0)（或负值）此前 SQL 打 LIMIT 20、信封却按「未分页」0/0 上报，调用方拿 20 条以为拿到全量；页长超 500 时信封报原值而 SQL 已被钳到 500，同样是谎报。入口 Normalize 后 GetPage/Spec.Page 回写生效值，未调用 Page() 的「未分页」0/0 语义不变
+
+关联问题单：oekit/gormx#155。
+
 ## [v0.11.11] — 2026-11-10
 
 - - build: 依赖地板对齐（floor sync，无代码变更）

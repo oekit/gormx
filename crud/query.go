@@ -501,8 +501,17 @@ func (q *Query) Omit(fields ...string) *Query {
 }
 
 // Page 设置分页。
+//
+// 入口归一（#155）：page<1 归 1、pageSize<1 归缺省 20、超上限钳到 500
+// （pkg/pagination.Normalize 同一口径）——GetPage/Spec.Page 回写**生效值**，
+// 响应信封与仓储层 Offset()/Limit() 的实际 LIMIT/OFFSET 换算一致。此前
+// Page(0, 0)（或负值）原样存 NewPageRequest(0,0)：仓储层内部归一打出
+// LIMIT 20，service.List 信封却按原始 0/0「未分页」上报——调用方拿 20 条
+// 以为拿到全量（#155）。未分页（未调用 Page）语义不变：信封 0/0。
 func (q *Query) Page(page, pageSize int) *Query {
-	q.page = pagination.NewPageRequest(page, pageSize)
+	pr := pagination.NewPageRequest(page, pageSize)
+	pr.Normalize()
+	q.page = pr
 	return q
 }
 
