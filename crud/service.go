@@ -36,13 +36,23 @@ type serviceConfig struct {
 // ServiceOption 配置 BaseService（命名对齐仓内硬规则，避免裸 Option）。
 type ServiceOption func(*serviceConfig)
 
-// WithNotFoundErr 把 not-found 对外错误固定替换为 err（消费方哨兵或
+// WithNotFoundErr 把 **not-found** 对外错误固定替换为 err（消费方哨兵或
 // 自有码表 BizError，如 bizerrors.NewBizErrorWithStatus(40401, 404, "...")）。
+// 只替换 not-found（errors.Is(err, ErrNotFound) 命中）：duplicate 等其余
+// 错误**原样上抛**——旧实现无条件替换全部错误（mapErr 恒返回 err），唯一键
+// 冲突（duplicate/409 语义）被伪装成 not-found 404，gormx.IsUniqueViolation
+// 判据随之恒 false（#160）。duplicate 等非 not-found 错误的码表映射请用
+// WithErrMapper（契约见 crud/doc.go）。
 // err 为 nil 时视为不替换（维持默认 BizCode 404，绝不把 not-found 吞成 nil）。
 // 与 WithErrMapper 共用同一槽位，后设置者生效。
 func WithNotFoundErr(err error) ServiceOption {
 	return func(c *serviceConfig) {
-		c.mapErr = func(error) error { return err }
+		c.mapErr = func(in error) error {
+			if errors.Is(in, ErrNotFound) {
+				return err
+			}
+			return in
+		}
 	}
 }
 

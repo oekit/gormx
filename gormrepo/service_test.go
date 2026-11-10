@@ -4,9 +4,11 @@ import (
 	"context"
 
 	"errors"
-	"github.com/oekit/gormx/crud"
 	"strings"
 	"testing"
+
+	"github.com/oekit/gormx"
+	"github.com/oekit/gormx/crud"
 
 	"github.com/glebarez/sqlite"
 	bizerrors "github.com/oekit/pkg/errors"
@@ -560,6 +562,46 @@ func TestBaseService_WithNotFoundErr_Integration(t *testing.T) {
 	}
 	if be.BizCode != 40401 {
 		t.Errorf("expected BizCode 40401（消费方码表），got %d", be.BizCode)
+	}
+}
+
+// TestBaseService_WithNotFoundErr_DuplicateStaysDuplicate 回归（#160）：
+// 装配 WithNotFoundErr 后，唯一键冲突必须保持 duplicate 语义——不得被替换成
+// not-found 404，且 gormx.IsUniqueViolation 判定仍为 true。旧实现无条件替换
+// 全部错误 ⇒ 唯一键冲突被伪装成 40401 not-found，错误文案与类型双双丢失、
+// IsUniqueViolation 恒 false（消费方连「这是重复键」都判不出来）。
+func TestBaseService_WithNotFoundErr_DuplicateStaysDuplicate(t *testing.T) {
+	db := setupServiceTestDB(t)
+	if err := db.Exec("CREATE UNIQUE INDEX ux_test_users_email ON test_users(email)").Error; err != nil {
+		t.Fatalf("create unique index: %v", err)
+	}
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo,
+		crud.WithNotFoundErr(bizerrors.NewBizErrorWithStatus(40401, 404, "user not found")),
+	).SetToEntity(func(r *userCreateReq) *testUser {
+		return &testUser{Name: r.Name, Age: r.Age, Email: r.Email}
+	})
+
+	ctx := context.Background()
+	if _, err := svc.Create(ctx, &userCreateReq{Name: "a", Age: 20, Email: "dup@e.com"}); err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	_, err := svc.Create(ctx, &userCreateReq{Name: "b", Age: 21, Email: "dup@e.com"})
+	if err == nil {
+		t.Fatal("duplicate Create must fail")
+	}
+	if !gormx.IsUniqueViolation(err) {
+		t.Fatalf("IsUniqueViolation = false（#160 复发：错误被换成 not-found 后判据失效），err = %v", err)
+	}
+	var be *bizerrors.BizError
+	if errors.As(err, &be) {
+		t.Errorf("duplicate 不得被 WithNotFoundErr 换成 not-found BizError，got %v", err)
+	}
+
+	// 对照：not-found 路径仍被替换成消费方码表（只换 not-found 的另一半契约）
+	_, err = svc.Get(ctx, 99999)
+	if !errors.As(err, &be) || be.BizCode != 40401 {
+		t.Fatalf("not-found 应替换为消费方码表 40401，got %v", err)
 	}
 }
 
