@@ -126,3 +126,45 @@ func TestPaginateList_SelectsMustNotPolluteCount(t *testing.T) {
 		t.Fatalf("Pages = %d, want 1（Pages 按 Total 计算，偏一即 #136 复发）", resp.Pages)
 	}
 }
+
+// TestPaginateList_Page2TotalHonest 回归（#161）：page≥2 时 Total 必须等于
+// 全表行数。此前 PaginateList 把 ApplyQuery（withPaging: true）的语句交给
+// gormx.Paginate，计数语句带上 `LIMIT 10 OFFSET 10`——聚合单行被 OFFSET
+// 跳过 ⇒ Total=0 / Pages=0，而 Items 里确实有第 11~20 条数据；调用方按
+// Pages==0 判「没有下一页」，剩余数据永远取不到。修复双侧：count 前剔除
+// LIMIT/OFFSET（gormx.Paginate），且 PaginateList 不再把 q 的分页带进语句
+// （分页只由 req 施加）。
+func TestPaginateList_Page2TotalHonest(t *testing.T) {
+	db := setupTestDB(t)
+	for range 25 {
+		if err := db.Create(&testUser{Name: "u", Age: 1}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := crud.NewQuery().Page(2, 10)
+
+	resp, err := PaginateList[testUser](db, pagination.NewPageRequest(2, 10), q)
+	if err != nil {
+		t.Fatalf("PaginateList: %v", err)
+	}
+	if resp.Total != 25 {
+		t.Fatalf("Total = %d, want 25（page≥2 计数带 OFFSET ⇒ 恒 0，#161 复发）", resp.Total)
+	}
+	if len(resp.Items) != 10 {
+		t.Fatalf("len(Items) = %d, want 10", len(resp.Items))
+	}
+	if resp.Pages != 3 {
+		t.Fatalf("Pages = %d, want 3（Pages=0 会让剩余页永远取不到）", resp.Pages)
+	}
+
+	// 对照口径：Repository.List 的 countStatement 路径，同一 Query 的 total
+	// 必须一致（两条公开 API 不得口径分裂）
+	repo := NewGormRepository[testUser, int64](db)
+	_, total, err := repo.List(context.Background(), q)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if total != resp.Total {
+		t.Fatalf("两条分页路径 total 口径分裂：List=%d PaginateList=%d", total, resp.Total)
+	}
+}

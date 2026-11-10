@@ -338,10 +338,18 @@ func (r *GormRepository[T, ID]) WithTx(tx *gorm.DB) *GormRepository[T, ID] {
 // PaginateList 使用 gormx.Paginate 执行分页查询。
 // 包级函数无仓储配置，**不**自动注入查询装饰器——需要 scope 时请用
 // Repository.List 或先把 scope 合入传入的 db。
+//
+// 分页口径（#161）：分页**只由 req 施加**，q 的 Page 不参与语句构造——
+// 此前经 ApplyQuery（withPaging: true）把带 LIMIT/OFFSET 的语句交给
+// gormx.Paginate，计数语句变成 `SELECT count(*) ... LIMIT 10 OFFSET 10`
+// （聚合单行被 OFFSET 跳过 ⇒ page≥2 时 Total 恒为 0，Items 却有数据），
+// 且 q.Page 与 req 双套分页在同一语句上叠加、口径随 MergeClause 漂移。
+// 条件/投影/预加载/排序/悲观锁照常应用（applySpec 非 forCount 形态），
+// 计数与列表共用同一条件面，与 Repository.List 的 countStatement 口径对齐。
 func PaginateList[T any](db *gorm.DB, req *pagination.PageRequest, q *crud.Query) (*crud.PageResponse[T], error) {
 	resp, err := gormx.Paginate[T](db, req, func(db *gorm.DB) *gorm.DB {
 		if q != nil {
-			return ApplyQuery(db, q)
+			return applySpec(db, q.Spec(), applyOptions{withPaging: false})
 		}
 		return db
 	})
