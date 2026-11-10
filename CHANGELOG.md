@@ -1,5 +1,9 @@
 
 
+## [v0.11.9] — 2026-11-10
+
+- - build: 依赖地板对齐（floor sync，无代码变更）
+
 ## [v0.11.8] — 2026-11-10
 
 - - fix(pagination): Paginate 计数语句丢弃 Selects——total 与实际返回条数一致，页数不再整体偏一（#136）
