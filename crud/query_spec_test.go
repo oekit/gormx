@@ -404,3 +404,152 @@ func TestQuery_Err_WhereRawEmpty(t *testing.T) {
 		t.Errorf("cond = %q, want %s", got, failClosedCondition)
 	}
 }
+
+// ---- #154：Order/GroupBy/Select/Preload 标识符白名单 ----
+
+// TestQuerySpec_Order_InjectionFailClosed 回归（#154）：Where/Or 有 field/op
+// 双白名单（#100/#135），但 Order 此前原样内插——gormrepo 把 spec.Orders 整串
+// 直接交给 GORM 的 raw Order 拼接，前端可控的「排序字段名」透传进来就是 SQL
+// 注入面。白名单（字段 [ASC|DESC]）外的排序必须丢弃（fail-closed，排序不含
+// 过滤语义，丢弃即安全）并按 #135 口径经 Err() 累计、Strict() 当场 panic。
+func TestQuerySpec_Order_InjectionFailClosed(t *testing.T) {
+	cases := []struct{ name, order string }{
+		{"注入载荷", "id; DROP TABLE users; --"},
+		{"UNION 注入", "id) UNION SELECT password FROM users --"},
+		{"函数调用", "RAND()"},
+		{"子查询", "(SELECT 1)"},
+		{"注释符", "id/*x*/"},
+		{"引号片段", "' OR '1'='1"},
+		{"空排序", ""},
+		{"仅方向", "DESC"},
+		{"方向后缀伪关键字", "id DESC; DROP TABLE users; --"},
+		{"多段含坏段", "id DESC, name; DROP TABLE users; --"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := NewQuery().Order(tc.order)
+			spec := q.Spec()
+			if len(spec.Orders) != 0 {
+				t.Errorf("Order(%q) 应丢弃（原样透传即注入面）, spec.Orders = %v", tc.order, spec.Orders)
+			}
+			if q.Err() == nil {
+				t.Errorf("Order(%q) 应计入 Err() 信号面（#135）", tc.order)
+			}
+		})
+	}
+}
+
+// TestQuerySpec_GroupSelectPreload_InjectionFailClosed（#154）：GroupBy/
+// Select/Preload(assoc) 与 Order 同一防线——白名单外的值丢弃 + Err() 累计，
+// 绝不原样透传。
+func TestQuerySpec_GroupSelectPreload_InjectionFailClosed(t *testing.T) {
+	t.Run("GroupBy", func(t *testing.T) {
+		for _, field := range []string{"id; DROP TABLE users; --", "COUNT(*)", "id, (SELECT 1)", ""} {
+			q := NewQuery().GroupBy(field)
+			if got := q.Spec().GroupBy; got != "" {
+				t.Errorf("GroupBy(%q) 应丢弃, spec.GroupBy = %q", field, got)
+			}
+			if q.Err() == nil {
+				t.Errorf("GroupBy(%q) 应计入 Err()", field)
+			}
+		}
+	})
+	t.Run("Select", func(t *testing.T) {
+		for _, field := range []string{"id, (SELECT password FROM users)", "id; DROP TABLE users; --", "COUNT(*)"} {
+			q := NewQuery().Select(field)
+			if got := q.Spec().Selects; len(got) != 0 {
+				t.Errorf("Select(%q) 应丢弃, spec.Selects = %v", field, got)
+			}
+			if q.Err() == nil {
+				t.Errorf("Select(%q) 应计入 Err()", field)
+			}
+		}
+	})
+	t.Run("Preload", func(t *testing.T) {
+		for _, assoc := range []string{"Profile; DROP TABLE users; --", "a'b", "Orders.", ""} {
+			q := NewQuery().Preload(assoc)
+			if got := q.Spec().Preloads; len(got) != 0 {
+				t.Errorf("Preload(%q) 应丢弃, spec.Preloads = %+v", assoc, got)
+			}
+			if q.Err() == nil {
+				t.Errorf("Preload(%q) 应计入 Err()", assoc)
+			}
+		}
+	})
+}
+
+// TestQuerySpec_OrderGroupSelectPreload_ValidPassthrough（#154 正例）：
+// 合法调用原样透传、不计入 Err()——白名单收紧不得破坏既有用法（向后兼容）。
+func TestQuerySpec_OrderGroupSelectPreload_ValidPassthrough(t *testing.T) {
+	q := NewQuery().
+		Order("created_at DESC").
+		Order("name").
+		Order("a DESC, b ASC").
+		GroupBy("tenant_id").
+		Select("id", "name", "t.col", "*", "t.*").
+		Preload("Profile").
+		Preload("Orders.Items", "status = ?", 1)
+	if err := q.Err(); err != nil {
+		t.Fatalf("合法调用不应计入 Err(): %v", err)
+	}
+	spec := q.Spec()
+	if len(spec.Orders) != 3 || spec.Orders[0] != "created_at DESC" || spec.Orders[1] != "name" || spec.Orders[2] != "a DESC, b ASC" {
+		t.Errorf("orders = %v", spec.Orders)
+	}
+	if spec.GroupBy != "tenant_id" {
+		t.Errorf("groupBy = %q", spec.GroupBy)
+	}
+	if len(spec.Selects) != 5 {
+		t.Errorf("selects = %v", spec.Selects)
+	}
+	if len(spec.Preloads) != 2 || spec.Preloads[0].Assoc != "Profile" || spec.Preloads[1].Assoc != "Orders.Items" {
+		t.Errorf("preloads = %+v", spec.Preloads)
+	}
+}
+
+// TestQuery_Strict_PanicsOnInjectedOrder 严格模式同口径（#154）：非法排序在
+// Strict() 下当场 panic（信号面与 Where/Or 一致，#135）。
+func TestQuery_Strict_PanicsOnInjectedOrder(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("Strict 模式下非法 Order 应 panic（#154）")
+		}
+	}()
+	NewQuery().Strict().Order("id; DROP TABLE users; --")
+}
+
+// TestQuery_Page_NormalizesAtEntry（#155）：分页入口归一——GetPage/Spec.Page
+// 回写生效值，与仓储层 Offset()/Limit() 的归一口径一致（信封不再按原始
+// 0/0「未分页」谎报）。
+func TestQuery_Page_NormalizesAtEntry(t *testing.T) {
+	cases := []struct {
+		name               string
+		page, size         int
+		wantPage, wantSize int
+	}{
+		{"0/0 按缺省归一", 0, 0, 1, 20},
+		{"负值按缺省归一", -3, -1, 1, 20},
+		{"页长超上限钳到 500", 1, 1000, 1, 500},
+		{"合法值原样", 2, 30, 2, 30},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := NewQuery().Page(tc.page, tc.size)
+			p := q.GetPage()
+			if p == nil {
+				t.Fatal("GetPage() = nil")
+			}
+			if p.Page != tc.wantPage || p.PageSize != tc.wantSize {
+				t.Errorf("GetPage() = (%d, %d), want (%d, %d)", p.Page, p.PageSize, tc.wantPage, tc.wantSize)
+			}
+			spec := q.Spec()
+			if spec.Page == nil || spec.Page.Page != tc.wantPage || spec.Page.PageSize != tc.wantSize {
+				t.Errorf("spec.Page = %+v, want (%d, %d)", spec.Page, tc.wantPage, tc.wantSize)
+			}
+			// 与仓储层 LIMIT/OFFSET 换算一致（信封回写值 = 实际生效值）
+			if p.Limit() != tc.wantSize {
+				t.Errorf("Limit() = %d, want %d", p.Limit(), tc.wantSize)
+			}
+		})
+	}
+}

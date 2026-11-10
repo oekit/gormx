@@ -28,6 +28,9 @@ type stubRepo struct {
 	delRows   int64
 	delErr    error
 	createErr error
+
+	listItems []stubEntity // List 返回的条目
+	listTotal int64        // List 返回的总数
 }
 
 func (s *stubRepo) GetByID(_ context.Context, _ int64) (*stubEntity, error) {
@@ -46,7 +49,7 @@ func (s *stubRepo) GetByCondition(ctx context.Context, _ any, _ ...any) (*stubEn
 }
 
 func (s *stubRepo) List(_ context.Context, _ *Query) ([]stubEntity, int64, error) {
-	return nil, 0, nil
+	return s.listItems, s.listTotal, nil
 }
 
 func (s *stubRepo) Exists(_ context.Context, _ *Query) (bool, error) { return true, nil }
@@ -313,6 +316,39 @@ func TestBaseService_NotFoundErrMapping(t *testing.T) {
 		var be *bizerrors.BizError
 		if !errors.As(err, &be) || be.BizCode != 40901 {
 			t.Fatalf("expected BizCode 40901, got %v", err)
+		}
+	})
+}
+
+// TestBaseService_List_PageEnvelope_Honest（#155）：Page(0,0) 的响应信封必须
+// 如实回写生效值。此前 Query.Page 原样存 NewPageRequest(0,0)，仓储层
+// Offset()/Limit() 内部归一（0→1、0→20）打出 LIMIT 20，List 信封却按原始
+// 0/0 回写「未分页」——调用方拿 20 条以为拿到全量。
+func TestBaseService_List_PageEnvelope_Honest(t *testing.T) {
+	ctx := context.Background()
+	items := make([]stubEntity, 20)
+
+	t.Run("Page(0,0) 信封按生效分页上报", func(t *testing.T) {
+		svc := newStubService(&stubRepo{listItems: items, listTotal: 25})
+		resp, err := svc.List(ctx, NewQuery().Page(0, 0))
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if resp.Page != 1 || resp.PageSize != 20 || resp.Pages != 2 {
+			t.Errorf("信封应如实回写生效分页 page=1/pageSize=20/pages=2（报 0/0 即把 20 条当全量）, got page=%d pageSize=%d pages=%d",
+				resp.Page, resp.PageSize, resp.Pages)
+		}
+	})
+
+	t.Run("未调用 Page() 仍按未分页 0/0 上报（口径不变）", func(t *testing.T) {
+		svc := newStubService(&stubRepo{listItems: items, listTotal: 25})
+		resp, err := svc.List(ctx, NewQuery().Where("id", ">", 0))
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if resp.Page != 0 || resp.PageSize != 0 || resp.Pages != 0 {
+			t.Errorf("未分页信封应为 0/0/0, got page=%d pageSize=%d pages=%d",
+				resp.Page, resp.PageSize, resp.Pages)
 		}
 	})
 }
