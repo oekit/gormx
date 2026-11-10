@@ -1,6 +1,7 @@
 package gormx
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/oekit/pkg/pagination"
@@ -59,6 +60,54 @@ func TestIsUniqueViolation_PostgreSQL_Code(t *testing.T) {
 	err := &mockErr{msg: "ERROR: duplicate key value (23505)"}
 	if !IsUniqueViolation(err) {
 		t.Error("expected true for PostgreSQL 23505")
+	}
+}
+
+// mockPGError 按 *pgconn.PgError 的公开形状镜像（SQLState() 方法，口径同
+// migrate 包的 fakePgError），钉住 IsUniqueViolation 的类型化窄判据（#163）。
+type mockPGError struct{ code, msg string }
+
+func (e *mockPGError) Error() string    { return e.msg }
+func (e *mockPGError) SQLState() string { return e.code }
+
+// TestIsUniqueViolation_PGTypedCode（#163）：pg 错误码走类型化字段判定——
+// errors.As 命中 SQLState() 投影后比对 SQLSTATE == 23505。文案本地化
+// （不含任何英文唯一冲突措辞）也能判出；包装链透明。
+func TestIsUniqueViolation_PGTypedCode(t *testing.T) {
+	err := &mockPGError{code: "23505", msg: "FEHLER: doppelter Schlüsselwert verletzt Unique-Constraint"}
+	if !IsUniqueViolation(err) {
+		t.Error("expected true for typed pg SQLSTATE 23505（类型化字段判定缺失）")
+	}
+	wrapped := fmt.Errorf("migrate: %w", err)
+	if !IsUniqueViolation(wrapped) {
+		t.Error("errors 链上的 SQLState() 投影应被命中")
+	}
+}
+
+// TestIsUniqueViolation_23505DigitsMustNotFalsePositive（#163）负例面：
+// 错误文本里的五位数字 23505 是常态（列号/端口/字节数），不是唯一冲突。
+// 旧实现裸子串匹配 "23505" 把这些全判成唯一冲突——「窄判据」注释与实现相反。
+func TestIsUniqueViolation_23505DigitsMustNotFalsePositive(t *testing.T) {
+	cases := []error{
+		&mockErr{msg: "pq: syntax error at column 23505"},
+		&mockErr{msg: "dial tcp 10.0.0.1:23505: connection refused"},
+		&mockErr{msg: "read tcp: unexpected EOF after 23505 bytes"},
+		&mockErr{msg: "ERROR: 23505"},                                             // 裸错误码文案：无唯一冲突措辞
+		&mockPGError{code: "42601", msg: "FEHLER: Syntaxfehler bei Spalte 23505"}, // 类型化非 23505
+	}
+	for _, err := range cases {
+		if IsUniqueViolation(err) {
+			t.Errorf("含 23505 数字/非 23505 SQLSTATE 的错误不得判为唯一冲突: %q", err.Error())
+		}
+	}
+}
+
+// TestIsUniqueViolation_PGSQLStateContext（#163）：pgconn.Error() 的码邻接
+// 形态 "(SQLSTATE 23505)" 保留为文案兜底——带上下文限定，非裸数字匹配。
+func TestIsUniqueViolation_PGSQLStateContext(t *testing.T) {
+	err := &mockErr{msg: "ERROR: irgendwas (SQLSTATE 23505)"}
+	if !IsUniqueViolation(err) {
+		t.Error("expected true for '(SQLSTATE 23505)' 邻接形态")
 	}
 }
 
