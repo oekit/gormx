@@ -1,7 +1,7 @@
 # AGENTS.md — oekit/gormx
 
-> SQL/GORM 全家——连接池增强、框架无关 CRUD Service、仓储（原 oekit/gorm，v0.3.0 更名）
-> 当前版本：`v0.11.12` · module：`github.com/oekit/gormx` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> SQL/GORM 全家——连接池增强、框架无关 CRUD Service、仓储（原 oekit/gorm，v0.3.0 更名）；v0.11.13 审计修复轮——migrate 多列 ALTER 拆分非 ADD 子句不连坐（head 也入守卫，#164）、IsUniqueViolation 真窄判据（pg SQLSTATE 类型化，#163）、Paginate 计数剔除 LIMIT/OFFSET（#161）、WithNotFoundErr 只替换 not-found（#160）
+> 当前版本：`v0.11.13` · module：`github.com/oekit/gormx` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 `./`、`crud/`、`gormrepo/`、`sqlitedrv/`（opt-in 纯 Go sqlite 入口子包，#72 起）、`migrate/`（裸 SQL 脚本建表/升级执行器）、`datatypes/`（泛型 JSON 列类型 JSONSlice/JSONMap，#80 起）、`scoper/`（行级可见性规则单源插件，#102 起）

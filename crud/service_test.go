@@ -278,6 +278,24 @@ func TestBaseService_NotFoundErrMapping(t *testing.T) {
 		assertNotFound(t, err)
 	})
 
+	t.Run("WithNotFoundErr 只替换 not-found：duplicate 原样上抛（#160）", func(t *testing.T) {
+		dup := errors.New("constraint failed: UNIQUE constraint failed: users.email (2067)")
+		svc := newStubService(&stubRepo{createErr: dup},
+			WithNotFoundErr(bizerrors.NewBizErrorWithStatus(40401, 404, "not found")))
+		_, err := svc.Create(ctx, &svcCreateReq{Name: "x"})
+		if err == nil {
+			t.Fatal("expected duplicate error")
+		}
+		// 旧实现无条件替换全部错误 ⇒ duplicate 被伪装成 40401 not-found（#160）
+		if !errors.Is(err, dup) {
+			t.Fatalf("duplicate 错误应原样上抛（含 Cause 链），got %v", err)
+		}
+		var be *bizerrors.BizError
+		if errors.As(err, &be) {
+			t.Errorf("duplicate 不得被 WithNotFoundErr 换成 not-found BizError，got %v", err)
+		}
+	})
+
 	t.Run("WithErrMapper：入参为默认 BizError 404 且 ErrNotFound 链可判", func(t *testing.T) {
 		var gotIn error
 		sentinel := errors.New("mapped")

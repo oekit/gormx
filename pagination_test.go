@@ -245,6 +245,36 @@ func TestPaginate_CountDropsSelects_WithWhere(t *testing.T) {
 	}
 }
 
+// TestPaginate_CountDropsLimitOffset（#161）：queryFn 自带分页（如
+// gormrepo.ApplyQuery 的 withPaging 形态）时，计数语句必须剔除 LIMIT/OFFSET
+// ——`SELECT count(*) FROM t LIMIT 10 OFFSET 10` 的聚合结果只有一行、被
+// OFFSET 跳过 ⇒ page≥2 时 Total 恒为 0（Items 却有数据，信封自相矛盾、
+// Pages=0 让剩余页永远取不到）。计数语义是「全量行数」，与页码无关。
+func TestPaginate_CountDropsLimitOffset(t *testing.T) {
+	db := newTestDB(t, &TestBase{})
+	for range 25 {
+		if err := db.Create(&TestBase{Name: "row"}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resp, err := Paginate[TestBase](db, pagination.NewPageRequest(2, 10), func(db *gorm.DB) *gorm.DB {
+		return db.Model(&TestBase{}).Offset(10).Limit(10) // 模拟已带分页的入参语句
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 25 {
+		t.Fatalf("Total = %d, want 25（count 语句带 LIMIT/OFFSET ⇒ page≥2 恒 0，#161 复发）", resp.Total)
+	}
+	if len(resp.Items) != 10 {
+		t.Fatalf("len(Items) = %d, want 10（find 路径分页不受计数窗口影响）", len(resp.Items))
+	}
+	if resp.Pages != 3 {
+		t.Fatalf("Pages = %d, want 3", resp.Pages)
+	}
+}
+
 // TestPaginate_CountThenFind_ProjectionPreserved 计数借还窗口的护栏：Count
 // 结束后 find 路径仍按调用方的 Selects 投影执行——共享语句在计数后必须
 // 恢复原状（Selects 还原），否则单列查询会悄悄退化成全列扫描。

@@ -1,5 +1,25 @@
 
 
+## [v0.11.13] — 2026-11-11
+
+- fix(migrate): execSplitAlters 的非 ADD 守卫补查 head（#164）——首个 ADD 之前的非 ADD 子句（DROP/CHANGE/MODIFY）此前漏检，并被携带进每条拆分语句：head 的 ignorable 失败把要加的列整条连坐吞掉（execSplitAlters 却报「多列 ALTER 已拆分执行」，迁移绿、schema 永久缺列）。现按单里修法「head 的可 ignorable 子句单独先执行/剥离」：head 子句逐条单独先执行（失败 ignorable 跳过、否则上抛），ADD 条目只带 `ALTER TABLE <表>` 前缀裸拆；tail 混入非 ADD 子句仍按契约不做拆分，且收紧为守卫命中即零执行
+
+关联问题单：oekit/gormx#164。
+
+- fix(transaction): IsUniqueViolation 真窄判据（#163）——pg 错误码改类型化字段判定（errors.As 命中 SQLState() 投影后比对 SQLSTATE == 23505，口径同 migrate 的 pgconn 投影），删除裸子串 "23505" 匹配（错误文本里的列号/端口/字节数命中即把语法/网络错误误判成唯一冲突，「窄判据」注释与实现相反）；文案兜底只留三条确切措辞与 pgconn.Error() 的码邻接形态 "(SQLSTATE 23505)"，补负例钉住误命中面
+
+关联问题单：oekit/gormx#163。
+
+- fix(pagination): Paginate 计数语句剔除 LIMIT/OFFSET（#161）——baseDB 自带分页（gormrepo.ApplyQuery 的 withPaging 形态）时计数变成 `SELECT count(*) FROM users LIMIT 10 OFFSET 10`，聚合单行被 OFFSET 跳过 ⇒ page≥2 时 Total 恒为 0（Items 却有数据、Pages=0 让剩余页永远取不到）。gormrepo.PaginateList 同步只由 req 施加分页（q 的 Page 不再带进语句），两条公开分页 API 的 total 口径归一
+
+关联问题单：oekit/gormx#161。
+
+- fix(crud): WithNotFoundErr 只替换 not-found（#160）——旧实现无条件替换全部错误，唯一键冲突（duplicate/409 语义）被伪装成 not-found 404，gormx.IsUniqueViolation 判据随之恒 false；现仅 errors.Is(err, ErrNotFound) 命中才替换，duplicate 等其余错误原样上抛
+
+关联问题单：oekit/gormx#160。
+
+- 现代语言特性（贴合处落地）：errors.Is/errors.As（#163 类型化判据、#160 条件映射）、strings.EqualFold/strings.IndexAny（migrate 的 ALTER 前缀与子句切分）、for range int（子句扫描、测试造数）、max（括号深度下溢保护）
+
 ## [v0.11.12] — 2026-11-11
 
 - fix(crud): Order/GroupBy/Select/Preload 标识符白名单 fail-closed（#154）——白名单外的排序/分组/投影/关联名整条丢弃并按 #135 口径经 Err() 累计、Strict() 当场 panic，前端可控字段名不再原样内插 SQL；合法调用（字段 [ASC|DESC]、点分关联路径、裸标识符 / * / t.* 投影）原样透传向后兼容
