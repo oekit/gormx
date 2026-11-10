@@ -85,6 +85,69 @@ func TestRedactor_InsertTuples(t *testing.T) {
 	}
 }
 
+// TestRedactor_QuotedValuesWithEscapes #138 回归：值本身含引号（驱动内联
+// 为逃逸形态）时不得静默 no-op——原文泄漏比误伤语句结构更不可接受。
+func TestRedactor_QuotedValuesWithEscapes(t *testing.T) {
+	r := newRedactor([]string{"password"})
+	cases := []struct{ name, in, want string }{
+		{
+			"元组值含反斜杠转义引号（#138 原始复现）",
+			`INSERT INTO t (id, password) VALUES (1, 'a\',b')`,
+			`INSERT INTO t (id, password) VALUES (1,***)`,
+		},
+		{
+			"转义引号后多行元组不再整体 no-op",
+			`INSERT INTO t (id, password) VALUES (1, 'a\'b'), (2, 'c')`,
+			`INSERT INTO t (id, password) VALUES (1,***), (2,***)`,
+		},
+		{
+			"元组值含双写引号",
+			`INSERT INTO t (id, password) VALUES (1, 'a''b')`,
+			`INSERT INTO t (id, password) VALUES (1,***)`,
+		},
+		{
+			"双写引号 + 值内逗号",
+			`INSERT INTO t (id, password) VALUES (1, 'a''b,c''d'), (2, 'e')`,
+			`INSERT INTO t (id, password) VALUES (1,***), (2,***)`,
+		},
+		{
+			"赋值形态双写引号不残留尾巴",
+			"UPDATE t SET password = 'a''b' WHERE id = 1",
+			"UPDATE t SET password = *** WHERE id = 1",
+		},
+		{
+			"赋值形态反斜杠转义引号不残留尾巴",
+			`UPDATE t SET password = 'a\'b' WHERE id = 1`,
+			`UPDATE t SET password = *** WHERE id = 1`,
+		},
+		{
+			"普通值不受逃逸识别影响",
+			`INSERT INTO t (id, password) VALUES (1, 'plain')`,
+			`INSERT INTO t (id, password) VALUES (1,***)`,
+		},
+	}
+	for _, c := range cases {
+		if got := r.redact(c.in); got != c.want {
+			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)
+		}
+	}
+}
+
+// TestRedactor_FailClosedOnUnbalanced #138 失败闭合档：括号/引号配对无法
+// 解析（截断语句、方言不可判定）时，存在敏感列不原文放行剩余部分；无
+// 敏感列的语句结构不受影响。
+func TestRedactor_FailClosedOnUnbalanced(t *testing.T) {
+	r := newRedactor([]string{"password"})
+	if got, want := r.redact(`INSERT INTO t (id, password) VALUES (1, 'a`), `INSERT INTO t (id, password) VALUES ***`; got != want {
+		t.Errorf("未闭合引号应失败闭合:\n got %s\nwant %s", got, want)
+	}
+	// 无敏感列：不做失败闭合，语句原样
+	plain := `INSERT INTO t (id, name) VALUES (1, 'a`
+	if got := r.redact(plain); got != plain {
+		t.Errorf("无敏感列不应改写语句:\n got %s\nwant %s", got, plain)
+	}
+}
+
 func TestRedactor_EmptyIsNil(t *testing.T) {
 	if newRedactor(nil) != nil || newRedactor([]string{}) != nil {
 		t.Error("空列集应返回 nil（不脱敏，零开销直通）")
@@ -164,6 +227,36 @@ func TestOpen_WithLoggerRedactionEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(out, "INSERT INTO users") {
 		t.Errorf("语句结构应保留: %q", out)
+	}
+}
+
+// TestOpen_WithLoggerRedactionQuotedValue #138 端到端回归：真实驱动把含
+// 引号的敏感值内联为逃逸形态（sqlite 双写单引号），日志出口不得泄漏原文。
+func TestOpen_WithLoggerRedactionQuotedValue(t *testing.T) {
+	buf := captureStdLog(t)
+	db, err := Open(
+		sqlite.Open("file:"+uuid.New().String()+"?mode=memory&cache=shared"),
+		WithLogger(NewDefaultLogger(WithRedactColumns("password"))),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	if err := db.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, password TEXT)").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO users (name, password) VALUES ('bob', ?)", "it's a \"secret\", ok").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	out := buf.String()
+	if strings.Contains(out, "secret") || strings.Contains(out, `it's`) {
+		t.Errorf("含引号敏感值泄漏进日志: %q", out)
+	}
+	if !strings.Contains(out, "***") {
+		t.Errorf("脱敏占位应出现在日志: %q", out)
 	}
 }
 
