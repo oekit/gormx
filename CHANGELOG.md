@@ -1,6 +1,6 @@
 
 
-## [Unreleased]
+## [v0.11.12] — 2026-11-11
 
 - fix(crud): Order/GroupBy/Select/Preload 标识符白名单 fail-closed（#154）——白名单外的排序/分组/投影/关联名整条丢弃并按 #135 口径经 Err() 累计、Strict() 当场 panic，前端可控字段名不再原样内插 SQL；合法调用（字段 [ASC|DESC]、点分关联路径、裸标识符 / * / t.* 投影）原样透传向后兼容
 
@@ -9,6 +9,8 @@
 - fix(crud): Page 入口归一，响应信封与实际 LIMIT/OFFSET 口径一致（#155）——Page(0, 0)（或负值）此前 SQL 打 LIMIT 20、信封却按「未分页」0/0 上报，调用方拿 20 条以为拿到全量；页长超 500 时信封报原值而 SQL 已被钳到 500，同样是谎报。入口 Normalize 后 GetPage/Spec.Page 回写生效值，未调用 Page() 的「未分页」0/0 语义不变
 
 关联问题单：oekit/gormx#155。
+
+- chore: #138（SQL-log redactor 引号逃逸泄漏）核实已由 v0.11.10（05962bc）修复并已验证回归转绿，本版无 #138 代码变更。
 
 ## [v0.11.11] — 2026-11-10
 
