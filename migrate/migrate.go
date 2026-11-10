@@ -4,7 +4,8 @@
 //   - 脚本清单**单层平铺**：install 与 upgrade 共用一份列表，按 Target 前缀选目录
 //   - 幂等兜底：重复键/列/索引、建表「已存在」类错误一律跳过；多列 ALTER TABLE
 //     ... ADD a, ADD b 失败时自动拆成单列逐条执行（MySQL 的多列 ADD 是原子的，
-//     直接跳过会漏掉真正需要新增的列）
+//     直接跳过会漏掉真正需要新增的列；非 ADD 子句不连坐 ADD 条目，head 也入
+//     守卫，#164）
 //
 // # 已知局限：不支持 DELIMITER / 存储过程脚本（#104）
 //
@@ -166,27 +167,130 @@ func execStatement(d *gorm.DB, path string, idx int, stmt string) error {
 
 // execSplitAlters 把 `ALTER TABLE t ADD a ..., ADD b ...` 拆成多条单列 ALTER 逐条执行。
 //
+// MySQL 的多列 ALTER 是原子操作，只要有一个子句失败（如某列已存在）就整条
+// 失败——直接跳过会漏掉真正需要新增的列。拆分以「每条子句一个 ALTER」逐条
+// 执行（牺牲子句间原子性，换取幂等重跑的可增量性）。
+//
+// 非 ADD 子句守卫（head 也入守卫，#164）：非 ADD 子句（如 DROP/CHANGE/MODIFY）
+// 绝不与 ADD 条目合并进同一条拆分语句——合并携带时它的 ignorable 失败会把
+// 要加的列整条连坐吞掉（迁移绿、schema 永久缺列）：
+//
+//   - tail（首个 ADD 之后的条目）混入非 ADD 子句：不做拆分（原契约口径，
+//     走整条语句的幂等跳过路径）；
+//   - head（首个 ADD 之前，#164 此前只查 parts 漏检 head）混入非 ADD 子句：
+//     head 子句逐条**单独先执行**（失败 ignorable 跳过、否则上抛），ADD
+//     条目只带 `ALTER TABLE <表>` 前缀裸拆——按 issue 修法二「head 的可
+//     ignorable 子句单独先执行/剥离，不动它就不该连坐 ADD 条目」。
+//
 // 返回 (是否发生了拆分, 首个非幂等错误)。
 func execSplitAlters(d *gorm.DB, stmt string) (bool, error) {
-	upper := strings.ToUpper(stmt)
-	if !strings.HasPrefix(upper, "ALTER TABLE") || !strings.Contains(upper, " ADD ") {
+	prefix, clauses, ok := splitAlterTable(stmt)
+	if !ok {
 		return false, nil
 	}
-	// 取 `ADD` 之后到语句末尾的部分
-	idx := strings.Index(upper, " ADD ")
-	if idx < 0 {
+	// 以首个 ADD 切开 head/tail：之前的都是 head 子句，之后的必须全是 ADD
+	firstAdd := -1
+	for i, c := range clauses {
+		if isAddClause(c) {
+			firstAdd = i
+			break
+		}
+	}
+	if firstAdd < 0 || len(clauses) < 2 {
 		return false, nil
 	}
-	head := strings.TrimSpace(stmt[:idx])
-	tail := stmt[idx:]
+	headClauses := clauses[:firstAdd]
+	addClauses := clauses[firstAdd:]
 
-	// 切分 ADD 列表（顶层逗号）
+	// tail 守卫：ADD 条目之间混入非 ADD 子句（如 DROP/CHANGE/MODIFY）时不做拆分
+	for _, c := range addClauses {
+		if !isAddClause(c) {
+			return false, nil
+		}
+	}
+
+	// head 守卫（#164）：head 子句逐条单独先执行，绝不携带进 ADD 条目
+	for _, c := range headClauses {
+		if err := d.Exec(prefix + " " + c).Error; err != nil && !IsIgnorableError(err) {
+			return true, err
+		}
+	}
+	for _, c := range addClauses {
+		if err := d.Exec(prefix + " " + c).Error; err != nil && !IsIgnorableError(err) {
+			return true, err
+		}
+	}
+	return true, nil
+}
+
+// splitAlterTable 把 `ALTER TABLE [ONLY|IF EXISTS] <表名> <子句…>` 切成
+// 「ALTER TABLE <表名>」前缀与逐条子句（顶层逗号切分，引号/括号内不切）。
+// 形状识别失败（非 ALTER TABLE、表名缺失、引号未闭合）返回 ok=false——
+// 存疑时不做拆分，宁可走整条语句的幂等跳过路径，也不做猜测性拆分。
+// 表名原样保留（标识符大小写语义随方言，不改写）。
+func splitAlterTable(stmt string) (prefix string, clauses []string, ok bool) {
+	s := strings.TrimSpace(stmt)
+	const kw = "ALTER TABLE"
+	if len(s) < len(kw) || !strings.EqualFold(s[:len(kw)], kw) {
+		return "", nil, false
+	}
+	rest := s[len(kw):]
+	for {
+		rest = strings.TrimLeft(rest, " \t\r\n")
+		if rest == "" {
+			return "", nil, false
+		}
+		nameEnd := 0 // 表名 token 在 rest 中的结束位置（开区间）
+		// 引号表名（反引号/双引号/单引号，双写引号为转义）
+		if q := rest[0]; q == '`' || q == '"' || q == '\'' {
+			nameEnd = 1
+			for nameEnd < len(rest) {
+				if rest[nameEnd] == q {
+					if nameEnd+1 < len(rest) && rest[nameEnd+1] == q {
+						nameEnd += 2
+						continue
+					}
+					break
+				}
+				nameEnd++
+			}
+			if nameEnd >= len(rest) {
+				return "", nil, false // 引号未闭合
+			}
+			nameEnd++ // 含右引号
+		} else {
+			// 裸词：ONLY / IF / EXISTS 是表名前的可选修饰（PG ONLY、MariaDB
+			// IF EXISTS），其余即表名
+			nameEnd = strings.IndexAny(rest, " \t\r\n,")
+			if nameEnd < 0 {
+				nameEnd = len(rest)
+			}
+			word := rest[:nameEnd]
+			switch {
+			case strings.EqualFold(word, "ONLY"),
+				strings.EqualFold(word, "IF"),
+				strings.EqualFold(word, "EXISTS"):
+				rest = rest[nameEnd:]
+				continue
+			case word == "":
+				return "", nil, false
+			}
+		}
+		// 前缀按原句切片（保留修饰词与标识符大小写，不做改写）
+		start := len(s) - len(rest)
+		return s[:start+nameEnd], splitTopLevelClauses(rest[nameEnd:]), true
+	}
+}
+
+// splitTopLevelClauses 按顶层逗号把 ALTER 子句列表切成单条（引号与括号内的
+// 逗号不切；空片段丢弃）。
+func splitTopLevelClauses(s string) []string {
 	var parts []string
 	depth := 0
 	cur := strings.Builder{}
 	inQuote := byte(0)
-	for i := 0; i < len(tail); i++ {
-		c := tail[i]
+	for i := range len(s) {
+		c := s[i]
 		if inQuote != 0 {
 			cur.WriteByte(c)
 			if c == inQuote {
@@ -202,7 +306,7 @@ func execSplitAlters(d *gorm.DB, stmt string) (bool, error) {
 			depth++
 			cur.WriteByte(c)
 		case ')':
-			depth--
+			depth = max(depth-1, 0)
 			cur.WriteByte(c)
 		case ',':
 			if depth == 0 {
@@ -218,28 +322,19 @@ func execSplitAlters(d *gorm.DB, stmt string) (bool, error) {
 	if strings.TrimSpace(cur.String()) != "" {
 		parts = append(parts, cur.String())
 	}
-	if len(parts) < 2 {
-		return false, nil
-	}
-
+	out := parts[:0]
 	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if !strings.HasPrefix(strings.ToUpper(p), "ADD") {
-			// 含非 ADD 子句（如 DROP/CHANGE/MODIFY）时不做拆分
-			return false, nil
-		}
-		single := head + " " + p
-		if err := d.Exec(single).Error; err != nil {
-			if IsIgnorableError(err) {
-				continue
-			}
-			return true, err
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
 		}
 	}
-	return true, nil
+	return out
+}
+
+// isAddClause 报告子句是否 ADD 形态（大小写不敏感：ADD COLUMN/ADD INDEX/
+// ADD KEY/ADD CONSTRAINT/ADD PRIMARY…）。
+func isAddClause(c string) bool {
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(c)), "ADD")
 }
 
 // IsIgnorableError 判断异常是否属于「重复执行可跳过」。

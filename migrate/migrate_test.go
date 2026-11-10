@@ -320,6 +320,144 @@ func TestSplitStatementsDelimiterNoStateMachine(t *testing.T) {
 	}
 }
 
+// ---- #164：execSplitAlters 的非 ADD 守卫（head 也入守卫） ----
+
+// TestExecSplitAlters_HeadClauseNotRideAlong 回归（#164）：head（首个 ADD
+// 之前）的非 ADD 子句不得携带进 ADD 条目的拆分语句。旧实现守卫只查 parts
+// 不查 head——携带 head 的拆分语句整条原子失败、被 IsIgnorableError 静默
+// continue ⇒ 要加的列全被吞掉，execSplitAlters 却返回 (true, nil) 报
+// 「已拆分执行」（迁移绿、schema 永久缺列）。
+// 修复后 head 子句逐条**单独先执行**（失败 ignorable 跳过），ADD 条目裸拆。
+func TestExecSplitAlters_HeadClauseNotRideAlong(t *testing.T) {
+	db := openMigrateTestDB(t)
+	if err := db.Exec("CREATE TABLE t64 (c INT, b INT)").Error; err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// head = RENAME COLUMN c TO b：目标名 b 已存在 ⇒ 单独执行报
+	// "duplicate column name: b"（ignorable），不得连坐 ADD 条目
+	stmt := "ALTER TABLE t64 RENAME COLUMN c TO b, ADD COLUMN a1 INT, ADD COLUMN a2 INT"
+	ok, err := execSplitAlters(db, stmt)
+	if !ok || err != nil {
+		t.Fatalf("execSplitAlters = (%v, %v), want (true, nil)", ok, err)
+	}
+	// 要加的列必须落库（修复前 head 连坐 ⇒ a1、a2 被静默吞掉）
+	for _, col := range []string{"a1", "a2"} {
+		var n int
+		if err := db.Raw("SELECT COUNT(" + col + ") FROM t64").Scan(&n).Error; err != nil {
+			t.Fatalf("列 %s 未加上（#164 复发：head 的 ignorable 失败吞掉 ADD 条目）：%v", col, err)
+		}
+	}
+	// head 子句 ignorable 失败 ⇒ 只跳过它自己（c 列名不变、b 列不被改名）
+	var n int
+	if err := db.Raw("SELECT COUNT(c) FROM t64").Scan(&n).Error; err != nil {
+		t.Fatalf("head 子句 ignorable 失败应跳过、c 列应仍在：%v", err)
+	}
+}
+
+// TestExecSplitAlters_HeadClauseExecutesFirst head 子句单独先执行的正向面：
+// head 非 ADD 子句自身可执行时照常生效，ADD 条目随后落库（与旧行为的差异：
+// 旧实现把 head 拼进每条拆分语句 ⇒ sqlite 下直接语法错、MySQL 下 head 失败
+// 连坐）。
+func TestExecSplitAlters_HeadClauseExecutesFirst(t *testing.T) {
+	db := openMigrateTestDB(t)
+	if err := db.Exec("CREATE TABLE t64b (c INT, x INT)").Error; err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	stmt := "ALTER TABLE t64b DROP COLUMN c, ADD COLUMN a1 INT, ADD COLUMN a2 INT"
+	ok, err := execSplitAlters(db, stmt)
+	if !ok || err != nil {
+		t.Fatalf("execSplitAlters = (%v, %v), want (true, nil)", ok, err)
+	}
+	var n int
+	if err := db.Raw("SELECT COUNT(c) FROM t64b").Scan(&n).Error; err == nil {
+		t.Error("head 子句 DROP COLUMN c 应已执行（c 列应已删除）")
+	}
+	for _, col := range []string{"a1", "a2"} {
+		if err := db.Raw("SELECT COUNT(" + col + ") FROM t64b").Scan(&n).Error; err != nil {
+			t.Fatalf("列 %s 未加上：%v", col, err)
+		}
+	}
+}
+
+// TestExecSplitAlters_MultiAddBareSplit 基线钉住：纯多列 ADD 的拆分行为不变
+// （每条 ADD 一个 ALTER，全部落库）。
+func TestExecSplitAlters_MultiAddBareSplit(t *testing.T) {
+	db := openMigrateTestDB(t)
+	if err := db.Exec("CREATE TABLE t64c (x INT)").Error; err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ok, err := execSplitAlters(db, "ALTER TABLE t64c ADD COLUMN a1 INT, ADD COLUMN a2 INT")
+	if !ok || err != nil {
+		t.Fatalf("execSplitAlters = (%v, %v), want (true, nil)", ok, err)
+	}
+	var n int
+	for _, col := range []string{"a1", "a2"} {
+		if err := db.Raw("SELECT COUNT(" + col + ") FROM t64c").Scan(&n).Error; err != nil {
+			t.Fatalf("列 %s 未加上：%v", col, err)
+		}
+	}
+}
+
+// TestExecSplitAlters_TailNonAddGuard tail 守卫契约不变：ADD 条目**之间**
+// 混入非 ADD 子句时不做拆分（返回 false，走整条语句的幂等跳过路径）。
+// 顺带收紧为「守卫命中即零执行」：旧实现在守卫命中前已逐条执行了前面的
+// ADD 条目（返回 false 却已落库，与「不做拆分」自相矛盾）。
+func TestExecSplitAlters_TailNonAddGuard(t *testing.T) {
+	db := openMigrateTestDB(t)
+	if err := db.Exec("CREATE TABLE t64d (c INT, x INT)").Error; err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ok, err := execSplitAlters(db, "ALTER TABLE t64d ADD COLUMN a1 INT, RENAME COLUMN c TO x")
+	if ok || err != nil {
+		t.Fatalf("tail 混入非 ADD 子句应拒绝拆分，got (%v, %v)", ok, err)
+	}
+	var n int
+	if err := db.Raw("SELECT COUNT(a1) FROM t64d").Scan(&n).Error; err == nil {
+		t.Error("不做拆分时不应执行任何子句")
+	}
+}
+
+// TestSplitAlterTable 形状识别面：前缀/表名/子句切分，识别失败一律 ok=false
+// （存疑不拆）。
+func TestSplitAlterTable(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        string
+		wantOK    bool
+		wantPfx   string
+		wantN     int
+		wantFirst string
+	}{
+		{"裸表名", "ALTER TABLE t ADD COLUMN a INT, ADD COLUMN b INT", true, "ALTER TABLE t", 2, "ADD COLUMN a INT"},
+		{"反引号表名", "ALTER TABLE `my,t` ADD COLUMN a INT, ADD COLUMN b INT", true, "ALTER TABLE `my,t`", 2, "ADD COLUMN a INT"},
+		{"PG ONLY", "alter table only t drop index x, add column a int", true, "alter table only t", 2, "drop index x"},
+		{"IF EXISTS", "ALTER TABLE IF EXISTS t DROP INDEX x, ADD COLUMN a INT", true, "ALTER TABLE IF EXISTS t", 2, "DROP INDEX x"},
+		{"非 ALTER", "CREATE TABLE t (id INT)", false, "", 0, ""},
+		{"引号未闭合", "ALTER TABLE `t ADD COLUMN a INT", false, "", 0, ""},
+		{"缺表名", "ALTER TABLE", false, "", 0, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pfx, clauses, ok := splitAlterTable(c.in)
+			if ok != c.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, c.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if pfx != c.wantPfx {
+				t.Errorf("prefix = %q, want %q", pfx, c.wantPfx)
+			}
+			if len(clauses) != c.wantN {
+				t.Fatalf("clauses = %#v, want %d 条", clauses, c.wantN)
+			}
+			if clauses[0] != c.wantFirst {
+				t.Errorf("clauses[0] = %q, want %q", clauses[0], c.wantFirst)
+			}
+		})
+	}
+}
+
 // ---- #98：LockKey 组合口（多副本 DDL 串行化） ----
 
 // TestRunLockKeyEmptyNoLock 空 LockKey = 缺省行为不变：不加锁、脚本照常执行。
