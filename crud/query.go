@@ -92,6 +92,64 @@ func isValidField(field string) bool {
 	return validFieldPattern.MatchString(field)
 }
 
+// validOrderClausePattern 是排序子句的白名单（#154）：字段名（可表限定）
+// + 可选方向关键字 ASC/DESC。Order 的字符串整串直通后端 raw 拼接面
+// （GORM Order 即裸拼，官方文档明示需自行防注入）——前端可控的「排序
+// 字段名」透传进来就是 SQL 注入，与 Where 的 field 同一面。
+var validOrderClausePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*(?:\s+(?i:ASC|DESC))?$`)
+
+// validSelectPattern 是 Select 投影的白名单（#154）：裸标识符（可表限定）
+// 与通配投影（* / t.*）。聚合表达式（COUNT(*)、子查询等）是 raw SQL 片段，
+// 不在白名单内——投影名透传即 SQL 注入面。
+var validSelectPattern = regexp.MustCompile(`^(?:\*|[A-Za-z_][A-Za-z0-9_.]*|[A-Za-z_][A-Za-z0-9_]*\.\*)$`)
+
+// isValidOrderList 报告排序串的全部子句是否都在排序白名单内（可逗号分隔
+// 多段："a DESC, b ASC"）。
+func isValidOrderList(order string) bool {
+	if strings.TrimSpace(order) == "" {
+		return false
+	}
+	for _, part := range strings.Split(order, ",") {
+		part = strings.TrimSpace(part)
+		// 裸方向关键字（ASC/DESC 单独成段）不是合法子句：方向必须跟在字段后。
+		if upper := strings.ToUpper(part); upper == "ASC" || upper == "DESC" {
+			return false
+		}
+		if !validOrderClausePattern.MatchString(part) {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidFieldList 报告逗号分隔的字段串是否全部段都在字段白名单内
+// （GroupBy 用）。
+func isValidFieldList(s string) bool {
+	if strings.TrimSpace(s) == "" {
+		return false
+	}
+	for _, part := range strings.Split(s, ",") {
+		if !isValidField(strings.TrimSpace(part)) {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidAssocPath 报告 Preload 关联路径是否合法：点分标识符
+// （Profile / Orders.Items）。
+func isValidAssocPath(assoc string) bool {
+	if assoc == "" {
+		return false
+	}
+	for _, part := range strings.Split(assoc, ".") {
+		if !isValidField(part) {
+			return false
+		}
+	}
+	return true
+}
+
 // buildCondition 将 (field, op, value) 解析为 SQL 片段与参数。
 // 返回 ok=false 表示无法解析（字段名不在标识符白名单、操作符不在白名单，
 // 或 BETWEEN/NOT BETWEEN 值形状非法），调用方必须以 1=0 fail-closed 处理 ——
@@ -387,20 +445,52 @@ func (q *Query) groupCondition() (Condition, bool) {
 //
 //	q.Order("created_at DESC")
 //	q.Order("name ASC")
+//	q.Order("a DESC, b ASC")
+//
+// order 必须是「字段 [ASC|DESC]」白名单内的排序子句（可逗号分隔多段，
+// 字段名为裸标识符、可表限定）：Order 的字符串整串直通后端 raw 拼接面
+// （GORM Order 即裸拼），前端可控的「排序字段名」透传进来就是 SQL 注入
+// （#154——Where/Or 有 field/op 双白名单，排序面此前零校验）。白名单外的
+// 排序整条丢弃（fail-closed：排序不含过滤语义，丢弃即安全）并按 #135 口径
+// 经 Err() 累计、Strict() 当场 panic；表达式排序（RAND() 等）不在支持面内。
 func (q *Query) Order(order string) *Query {
+	if !isValidOrderList(order) {
+		q.recordFailClosed(fmt.Sprintf("crud: Order(%q) 未通过排序白名单（字段 [ASC|DESC]，可逗号分隔多段），已丢弃——排序字符串直通后端 raw 拼接，前端可控字段名透传即 SQL 注入（#154）", order))
+		return q
+	}
 	q.orders = append(q.orders, order)
 	return q
 }
 
 // Preload 预加载关联。
+//
+// assoc 必须是点分标识符关联路径（Profile / Orders.Items）：白名单外的
+// 关联名丢弃并按 #135 口径经 Err() 累计、Strict() 当场 panic（#154，与
+// Order 同防线）。args 为调用方审计过的查询条件（同 WhereRaw 口径，值走
+// 占位符参数化）。
 func (q *Query) Preload(assoc string, args ...any) *Query {
+	if !isValidAssocPath(assoc) {
+		q.recordFailClosed(fmt.Sprintf("crud: Preload(%q) 未通过关联名白名单（点分标识符路径），已丢弃（#154）", assoc))
+		return q
+	}
 	q.preloads = append(q.preloads, Preload{Assoc: assoc, Args: args})
 	return q
 }
 
 // Select 选择特定字段。
+//
+// 每个字段必须在投影白名单内（裸标识符、可表限定，或通配 * / t.*）；
+// 白名单外的字段逐个丢弃并按 #135 口径经 Err() 累计、Strict() 当场 panic
+// （#154）。聚合表达式（COUNT(*)、子查询等）是 raw SQL 片段，不支持经
+// Select 透传。
 func (q *Query) Select(fields ...string) *Query {
-	q.selects = append(q.selects, fields...)
+	for _, f := range fields {
+		if !validSelectPattern.MatchString(f) {
+			q.recordFailClosed(fmt.Sprintf("crud: Select(%q) 未通过投影白名单（裸标识符 / * / t.*），已丢弃（#154）", f))
+			continue
+		}
+		q.selects = append(q.selects, f)
+	}
 	return q
 }
 
@@ -432,7 +522,15 @@ func (q *Query) ForUpdate() *Query {
 }
 
 // GroupBy 设置分组。
+//
+// field 必须是字段白名单内的标识符（可逗号分隔多段）：GroupBy 的字符串
+// 同样直通后端 raw 拼接面，白名单外整条丢弃并按 #135 口径经 Err() 累计、
+// Strict() 当场 panic（#154，与 Order 同防线）。
 func (q *Query) GroupBy(field string) *Query {
+	if !isValidFieldList(field) {
+		q.recordFailClosed(fmt.Sprintf("crud: GroupBy(%q) 未通过字段白名单（裸标识符，可逗号分隔多段），已丢弃（#154）", field))
+		return q
+	}
 	q.groupBy = field
 	return q
 }

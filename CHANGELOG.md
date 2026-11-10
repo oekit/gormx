@@ -1,5 +1,11 @@
 
 
+## [Unreleased]
+
+- fix(crud): Order/GroupBy/Select/Preload 标识符白名单 fail-closed（#154）——白名单外的排序/分组/投影/关联名整条丢弃并按 #135 口径经 Err() 累计、Strict() 当场 panic，前端可控字段名不再原样内插 SQL；合法调用（字段 [ASC|DESC]、点分关联路径、裸标识符 / * / t.* 投影）原样透传向后兼容
+
+关联问题单：oekit/gormx#154。
+
 ## [v0.11.11] — 2026-11-10
 
 - - build: 依赖地板对齐（floor sync，无代码变更）
