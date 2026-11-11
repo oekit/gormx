@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/oekit/gormx/internal/sqlident"
 	"github.com/oekit/pkg/pagination"
 )
 
@@ -80,28 +81,30 @@ var knownOps = map[string]struct{}{
 	"IS NULL": {}, "IS NOT NULL": {},
 }
 
-// validFieldPattern 是 Where/Or 字段名的标识符白名单（#100）：
-// 字母/下划线开头，仅含字母、数字、下划线与点（表限定名 t.col / json 路径
-// col->>key 之外的常规形态）。field 与 op 一样会直接拼入 SQL 片段——
-// 把前端可控的「排序/筛选字段名」透传给 Where 就是经典 SQL 注入，
+// isValidField 报告字段名是否在标识符白名单内（#100）。
+// 白名单口径：字母/下划线开头，仅含字母、数字、下划线与点（表限定名 t.col /
+// json 路径 col->>key 之外的常规形态）。field 与 op 一样会直接拼入 SQL
+// 片段——把前端可控的「排序/筛选字段名」透传给 Where 就是经典 SQL 注入，
 // fail-closed 必须同时覆盖 op 与 field 两个面。
-var validFieldPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*$`)
-
-// isValidField 报告字段名是否在标识符白名单内。
+// 单源在 internal/sqlident（#174，与根包 SubqueryIn column 同一份）。
 func isValidField(field string) bool {
-	return validFieldPattern.MatchString(field)
+	return sqlident.Match(field)
 }
 
 // validOrderClausePattern 是排序子句的白名单（#154）：字段名（可表限定）
 // + 可选方向关键字 ASC/DESC。Order 的字符串整串直通后端 raw 拼接面
 // （GORM Order 即裸拼，官方文档明示需自行防注入）——前端可控的「排序
 // 字段名」透传进来就是 SQL 注入，与 Where 的 field 同一面。
-var validOrderClausePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*(?:\s+(?i:ASC|DESC))?$`)
+// 标识符主体拼接自 sqlident.PlainBody（#174 单源）。
+var validOrderClausePattern = regexp.MustCompile(
+	`^(?:` + sqlident.PlainBody + `)(?:\s+(?i:ASC|DESC))?$`)
 
 // validSelectPattern 是 Select 投影的白名单（#154）：裸标识符（可表限定）
 // 与通配投影（* / t.*）。聚合表达式（COUNT(*)、子查询等）是 raw SQL 片段，
 // 不在白名单内——投影名透传即 SQL 注入面。
-var validSelectPattern = regexp.MustCompile(`^(?:\*|[A-Za-z_][A-Za-z0-9_.]*|[A-Za-z_][A-Za-z0-9_]*\.\*)$`)
+// 标识符分支拼接自 sqlident.PlainBody（#174 单源）。
+var validSelectPattern = regexp.MustCompile(
+	`^(?:\*|` + sqlident.PlainBody + `|[A-Za-z_][A-Za-z0-9_]*\.\*)$`)
 
 // isValidOrderList 报告排序串的全部子句是否都在排序白名单内（可逗号分隔
 // 多段："a DESC, b ASC"）。

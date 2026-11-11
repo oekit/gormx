@@ -3,6 +3,8 @@ package gormx
 import (
 	"regexp"
 	"strings"
+
+	"github.com/oekit/gormx/internal/sqltext"
 )
 
 // redactor 是 SQL 日志的列级脱敏器（#106）：按列名把绑定值替换为 ***，
@@ -32,12 +34,21 @@ import (
 type redactor struct {
 	columns    map[string]struct{}
 	assignment *regexp.Regexp
+	// broken 标记赋值形态正则编译失败（#178）。理论不可达（names 逐个
+	// regexp.QuoteMeta、模板固定），但口径上不能把「脱敏失效」伪装成
+	// 「未配置」：编译失败时 fail-closed——redact 整句替换为 ***，绝不
+	// 原文放行（旧实现返回 nil，与「空集返回 nil」不可区分，敏感列整体
+	// 失效且无任何信号，#106 要防的泄漏面静默重开）。构造时同时打 ERROR
+	// 日志告警（列名清单 + err），供接入期排查。
+	broken bool
 }
 
 // insertHeaderRe 匹配 INSERT 头部到 VALUES 关键字：捕获组 1 = 列清单。
 var insertHeaderRe = regexp.MustCompile(`(?is)INSERT\s+(?:IGNORE\s+)?INTO\s+[^\s(]+\s*\(([^)]*)\)\s*VALUES\s*`)
 
 // newRedactor 构造脱敏器；列名为空集时返回 nil（等价于不脱敏，调用方零开销）。
+// 配置了敏感列但正则编译失败时**不再**返回 nil（#178 fail-open 缺陷）：
+// 返回 broken redactor（fail-closed，见 broken 字段文档）。
 func newRedactor(cols []string) *redactor {
 	normalized := make(map[string]struct{}, len(cols))
 	var names []string
@@ -62,7 +73,12 @@ func newRedactor(cols []string) *redactor {
 	alt := strings.Join(names, "|")
 	re, err := regexp.Compile(`(?i)((?:` + "`" + `|"|\[)?(?:` + alt + `)(?:` + "`" + `|"|\])?\s*=\s*)('(?:[^'\\]|\\.|'')*'|"(?:[^"\\]|\\.|"")*"|[^,)\s]+)`)
 	if err != nil {
-		return nil
+		// #178 fail-closed：编译失败（理论上不可达——names 已 QuoteMeta）
+		// 不得静默降级为「不脱敏」——敏感列配置存在而整体失效是安全事件
+		// 形态，先告警（列名清单 + err）再 fail-closed。
+		gormLog.Error("SQL 脱敏器正则编译失败：已 fail-closed，所有 SQL 日志按脱敏处理（整句 ***）；请检查 WithRedactColumns 列名配置",
+			"columns", cols, "err", err)
+		return &redactor{columns: normalized, broken: true}
 	}
 	return &redactor{columns: normalized, assignment: re}
 }
@@ -75,9 +91,14 @@ func normalizeColumnName(c string) string {
 }
 
 // redact 对完整 SQL 语句做列级脱敏。
+// r == nil = 未配置敏感列（调用方零开销直通）；r.broken = 编译失败的
+// fail-closed 形态（#178）：整句 ***，与「未配置」严格区分。
 func (r *redactor) redact(sql string) string {
 	if r == nil {
 		return sql
+	}
+	if r.broken {
+		return "***"
 	}
 	sql = r.redactAssignments(sql)
 	sql = r.redactInserts(sql)
@@ -100,7 +121,7 @@ func (r *redactor) redactInserts(sql string) string {
 			return out.String()
 		}
 		headerEnd := pos + loc[1]
-		cols := splitTopLevel(sql[pos+loc[2]:pos+loc[3]], ',')
+		cols := sqltext.SplitTopLevel(sql[pos+loc[2]:pos+loc[3]], ',')
 		out.WriteString(sql[pos:headerEnd])
 		pos = headerEnd
 
@@ -122,7 +143,7 @@ func (r *redactor) redactInserts(sql string) string {
 			if pos >= len(sql) || sql[pos] != '(' {
 				break
 			}
-			end := matchParen(sql, pos)
+			end := sqltext.MatchParen(sql, pos)
 			if end < 0 {
 				// 失败闭合（#138）：括号配对无法解析（语句截断、引号逃逸
 				// 方言不可判定）时，本语句存在敏感列，剩余字节不原文放行
@@ -130,7 +151,7 @@ func (r *redactor) redactInserts(sql string) string {
 				out.WriteString("***")
 				return out.String()
 			}
-			values := splitTopLevel(sql[pos+1:end-1], ',')
+			values := sqltext.SplitTopLevel(sql[pos+1:end-1], ',')
 			for i := range values {
 				if sensitive[i] {
 					values[i] = "***"
@@ -154,88 +175,8 @@ func (r *redactor) redactInserts(sql string) string {
 	return out.String()
 }
 
-// matchParen 返回从 open 位置（'('）出发的配对闭括号后一位；引号内的
-// 括号/分隔符跳过（含 SQL 引号逃逸，见 skipQuoted）。未找到配对返回 -1
-// （调用方失败闭合）。
-func matchParen(s string, open int) int {
-	depth := 0
-	for i := open; i < len(s); i++ {
-		c := s[i]
-		if isSQLQuote(c) {
-			i = skipQuoted(s, i)
-			continue
-		}
-		switch c {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				return i + 1
-			}
-		}
-	}
-	return -1
-}
-
-// splitTopLevel 按分隔符切分，跳过引号内（含逃逸，见 skipQuoted）与
-// 嵌套括号内的分隔符。引号未闭合时剩余部分并入当前段（失败闭合方向：
-// 不会把未配对引号误当新值边界）。
-func splitTopLevel(s string, sep byte) []string {
-	var parts []string
-	depth := 0
-	start := 0
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if isSQLQuote(c) {
-			i = skipQuoted(s, i)
-			continue
-		}
-		switch c {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case sep:
-			if depth == 0 {
-				parts = append(parts, strings.TrimSpace(s[start:i]))
-				start = i + 1
-			}
-		}
-	}
-	if strings.TrimSpace(s[start:]) != "" {
-		parts = append(parts, strings.TrimSpace(s[start:]))
-	}
-	return parts
-}
-
-func isSQLQuote(c byte) bool {
-	return c == '\'' || c == '"' || c == '`'
-}
-
-// skipQuoted 返回从 open（引号开字符）出发的引号区段末字节下标：闭引号
-// 位置；未闭合则吃到底。SQL 引号逃逸（#138）：
-//   - 双写引号（同一引号字符连写两次）＝字面引号，仍在引号内；
-//   - 反斜杠转义（\' / \"，MySQL 方言）——下一字节（含转义引号）原样跳过；
-//     反引号为标识符引号，不适用反斜杠转义。
-func skipQuoted(s string, open int) int {
-	q := s[open]
-	allowBackslash := q != '`'
-	for i := open + 1; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case allowBackslash && c == '\\':
-			i++ // 转义下一字节（若越界则循环自然终止）
-		case c == q:
-			if i+1 < len(s) && s[i+1] == q {
-				i++ // 双写引号＝字面引号，仍在引号内
-				continue
-			}
-			return i
-		}
-	}
-	return len(s) - 1
-}
+// matchParen / splitTopLevel / skipQuoted 已下沉到 gormx/internal/sqltext
+// （#175 单源，带逃逸的正典版）——migrate 的顶层逗号切分同用一份。
 
 func isSQLSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'

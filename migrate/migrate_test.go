@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -336,7 +337,7 @@ func TestExecSplitAlters_HeadClauseNotRideAlong(t *testing.T) {
 	// head = RENAME COLUMN c TO b：目标名 b 已存在 ⇒ 单独执行报
 	// "duplicate column name: b"（ignorable），不得连坐 ADD 条目
 	stmt := "ALTER TABLE t64 RENAME COLUMN c TO b, ADD COLUMN a1 INT, ADD COLUMN a2 INT"
-	ok, err := execSplitAlters(db, stmt)
+	ok, err := execSplitAlters(context.Background(), db, stmt)
 	if !ok || err != nil {
 		t.Fatalf("execSplitAlters = (%v, %v), want (true, nil)", ok, err)
 	}
@@ -364,7 +365,7 @@ func TestExecSplitAlters_HeadClauseExecutesFirst(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	stmt := "ALTER TABLE t64b DROP COLUMN c, ADD COLUMN a1 INT, ADD COLUMN a2 INT"
-	ok, err := execSplitAlters(db, stmt)
+	ok, err := execSplitAlters(context.Background(), db, stmt)
 	if !ok || err != nil {
 		t.Fatalf("execSplitAlters = (%v, %v), want (true, nil)", ok, err)
 	}
@@ -386,7 +387,7 @@ func TestExecSplitAlters_MultiAddBareSplit(t *testing.T) {
 	if err := db.Exec("CREATE TABLE t64c (x INT)").Error; err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	ok, err := execSplitAlters(db, "ALTER TABLE t64c ADD COLUMN a1 INT, ADD COLUMN a2 INT")
+	ok, err := execSplitAlters(context.Background(), db, "ALTER TABLE t64c ADD COLUMN a1 INT, ADD COLUMN a2 INT")
 	if !ok || err != nil {
 		t.Fatalf("execSplitAlters = (%v, %v), want (true, nil)", ok, err)
 	}
@@ -407,7 +408,7 @@ func TestExecSplitAlters_TailNonAddGuard(t *testing.T) {
 	if err := db.Exec("CREATE TABLE t64d (c INT, x INT)").Error; err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	ok, err := execSplitAlters(db, "ALTER TABLE t64d ADD COLUMN a1 INT, RENAME COLUMN c TO x")
+	ok, err := execSplitAlters(context.Background(), db, "ALTER TABLE t64d ADD COLUMN a1 INT, RENAME COLUMN c TO x")
 	if ok || err != nil {
 		t.Fatalf("tail 混入非 ADD 子句应拒绝拆分，got (%v, %v)", ok, err)
 	}

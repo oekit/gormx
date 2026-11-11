@@ -90,16 +90,24 @@ func (r *SingletonRepo[T]) Get(ctx context.Context) (T, error) {
 	return model, nil
 }
 
-// Save 保存单例记录。已存在则更新（通过 ID），不存在则创建。
-// 在事务中使用 SELECT ... FOR UPDATE 锁定行。注意：FOR UPDATE 锁不住
-// "空表并发插入"的幻影（READ COMMITTED 下两个事务都读到 not found 后
-// 各自 Create）——Create 撞唯一约束/主键冲突时重读并改走更新路径收敛；
-// 单例表建议加唯一约束作为最终防线。
-func (r *SingletonRepo[T]) Save(ctx context.Context, model T) error {
-	col, err := r.primaryKeyColumn()
-	if err != nil {
-		return err
-	}
+// runWithUniqueRetry 是 Save / GetOrCreate 共享的事务骨架（#172 收敛单源）：
+// 「SELECT ... FOR UPDATE 锁行读（空表按未命中放行）→ fn 事务内策略 →
+// 唯一冲突重试一次」的 for-attempt 循环只此一份。
+//
+// 并发首插幻影：FOR UPDATE 锁不住"空表并发插入"（READ COMMITTED 下两个
+// 事务都读到 not found 后各自 Create）——Create 撞唯一约束/主键冲突时
+// 重读并改走更新路径收敛，fn 在第二轮会读到对方已插入的行。
+//
+// 重试判据用 IsUniqueViolation（#99，重报 #112）：它覆盖 gorm.ErrDuplicatedKey
+// （开 TranslateError 时）**和**各家驱动的裸文案——sqlite（glebarez 纯 Go，
+// 本包测试默认库）/MySQL/PG 未开 TranslateError 时错误是裸字符串，
+// errors.Is(err, gorm.ErrDuplicatedKey) 判不出来，收敛逻辑一次都不触发，
+// 正是该重试存在的理由。#99/#112 类判据修补只需改这一处。
+//
+// fn 收到锁行读的 existing（值拷贝；未命中时为主键零值，调用方按
+// GetID() > 0 区分）与当前事务句柄 tx；fn 的错误参与同一重试判定。
+func (r *SingletonRepo[T]) runWithUniqueRetry(ctx context.Context, col string, fn func(tx *gorm.DB, existing T) error) error {
+	var err error
 	for attempt := 0; attempt < 2; attempt++ {
 		err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			var existing T
@@ -109,21 +117,11 @@ func (r *SingletonRepo[T]) Save(ctx context.Context, model T) error {
 			if qerr != nil && !errors.Is(qerr, gorm.ErrRecordNotFound) {
 				return qerr
 			}
-			if existing.GetID() > 0 {
-				model.SetID(existing.GetID())
-				return tx.Save(model).Error
-			}
-			return tx.Create(model).Error
+			return fn(tx, existing)
 		})
 		if err == nil {
 			return nil
 		}
-		// 并发首插：另一方已 Create，本轮重读命中其记录走 Save 更新。
-		// 判据用 IsUniqueViolation（#99，重报 #112）：它覆盖 gorm.ErrDuplicatedKey（开
-		// TranslateError 时）**和**各家驱动的裸文案——sqlite（glebarez 纯 Go，
-		// 本包测试默认库）/MySQL/PG 未开 TranslateError 时错误是裸字符串，
-		// errors.Is(err, gorm.ErrDuplicatedKey) 判不出来，收敛逻辑一次都不
-		// 触发，正是该重试存在的理由。
 		if attempt == 0 && IsUniqueViolation(err) {
 			continue
 		}
@@ -132,10 +130,26 @@ func (r *SingletonRepo[T]) Save(ctx context.Context, model T) error {
 	return err
 }
 
+// Save 保存单例记录。已存在则更新（通过 ID），不存在则创建。
+// 在事务中使用 SELECT ... FOR UPDATE 锁定行。并发首插的幻影与收敛口径
+// 见 runWithUniqueRetry；单例表建议加唯一约束作为最终防线。
+func (r *SingletonRepo[T]) Save(ctx context.Context, model T) error {
+	col, err := r.primaryKeyColumn()
+	if err != nil {
+		return err
+	}
+	return r.runWithUniqueRetry(ctx, col, func(tx *gorm.DB, existing T) error {
+		if existing.GetID() > 0 {
+			model.SetID(existing.GetID())
+			return tx.Save(model).Error
+		}
+		return tx.Create(model).Error
+	})
+}
+
 // GetOrCreate 获取记录，不存在时创建默认值并返回。
-// 在事务中使用 SELECT ... FOR UPDATE 锁定行。与 Save 相同：FOR UPDATE
-// 锁不住空表并发插入的幻影，Create 撞唯一约束时重读收敛（最多重试一次）；
-// 单例表建议加唯一约束作为最终防线。
+// 在事务中使用 SELECT ... FOR UPDATE 锁定行。并发首插的幻影与收敛口径
+// 与 Save 相同（见 runWithUniqueRetry）；单例表建议加唯一约束作为最终防线。
 func (r *SingletonRepo[T]) GetOrCreate(ctx context.Context) (T, error) {
 	col, err := r.primaryKeyColumn()
 	if err != nil {
@@ -143,36 +157,17 @@ func (r *SingletonRepo[T]) GetOrCreate(ctx context.Context) (T, error) {
 		return zero, err
 	}
 	var result T
-	for attempt := 0; attempt < 2; attempt++ {
-		err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			var model T
-			qerr := tx.Clauses(gclause.Locking{Strength: "UPDATE"}).
-				Order(gclause.OrderByColumn{Column: gclause.Column{Name: col}, Desc: true}).
-				First(&model).Error
-			if qerr != nil && !errors.Is(qerr, gorm.ErrRecordNotFound) {
-				return qerr
-			}
-			if model.GetID() > 0 {
-				result = model
-				return nil
-			}
-			model = r.defaultVal()
-			if cerr := tx.Create(&model).Error; cerr != nil {
-				return cerr
-			}
-			result = model
+	err = r.runWithUniqueRetry(ctx, col, func(tx *gorm.DB, existing T) error {
+		if existing.GetID() > 0 {
+			result = existing
 			return nil
-		})
-		if err == nil {
-			return result, nil
 		}
-		// 与 Save 同判据（#99，重报 #112）：IsUniqueViolation 含 gorm.ErrDuplicatedKey
-		// 分支与 sqlite/MySQL/PG 的裸文案兜底——只认 ErrDuplicatedKey 时
-		// sqlite 下（未开 TranslateError）收敛逻辑形同虚设。
-		if attempt == 0 && IsUniqueViolation(err) {
-			continue
+		model := r.defaultVal()
+		if cerr := tx.Create(&model).Error; cerr != nil {
+			return cerr
 		}
-		break
-	}
+		result = model
+		return nil
+	})
 	return result, err
 }

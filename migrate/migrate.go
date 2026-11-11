@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/oekit/gormx"
+	"github.com/oekit/gormx/internal/sqltext"
 	"github.com/oekit/logx"
 	"gorm.io/gorm"
 )
@@ -53,7 +54,8 @@ type Options struct {
 	//     被拆成并行）；
 	//   - 内部经 FNV-1a 64 折成 int64 会话键（PG/MySQL 咨询锁键域），
 	//     同一字符串必得同一 int64；不同字符串碰撞概率 2^-64 量级；
-	//   - 拿锁阻塞直到获得（Run 无 ctx 入参，用 Background），拿锁失败/
+	//   - 拿锁阻塞直到获得或 ctx 取消（#177：RunContext 传入的 ctx 可中断
+	//     无限阻塞的拿锁；旧 Run 入口用 Background，行为不变），拿锁失败/
 	//     执行失败都返回错误 = fail-closed：交给部署的重启策略重试，
 	//     比静默无锁执行安全（多副本并发 DDL 正是要防的事故形态）；
 	//   - 方言不支持会话级咨询锁（sqlite 等）显式返回
@@ -69,23 +71,41 @@ type Options struct {
 //
 // Options.LockKey 非空时，全量执行在会话级咨询锁内串行化（多副本首启
 // DDL 互斥，见 Options.LockKey 文档）。
+//
+// ⚠️ 无 ctx 兼容入口（#177）：等价于 RunContext(context.Background(), d, opts)
+// ——DDL 不可取消、advisory lock 拿锁可无限阻塞。新代码请用 RunContext。
 func Run(d *gorm.DB, opts Options) error {
-	exec := func(tx *gorm.DB) error { return runScripts(tx, opts) }
+	return RunContext(context.Background(), d, opts)
+}
+
+// RunContext 与 Run 相同，但 ctx 贯穿全链路（#177）：
+//
+//   - 每条语句经 d.WithContext(ctx).Exec 执行——ctx 取消/超时即中断，
+//     DDL 不再「一旦卡住只能杀进程」；
+//   - LockKey 路径把 ctx 传入 RunWithAdvisoryLock——MySQL GET_LOCK(?, -1)
+//     的无限阻塞拿锁可被 ctx 取消中断（未拿到锁的路径无锁可解）。
+//
+// ctx 为 nil 时按 context.Background() 处理。
+func RunContext(ctx context.Context, d *gorm.DB, opts Options) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	exec := func(tx *gorm.DB) error { return runScripts(ctx, tx, opts) }
 	if opts.LockKey == "" {
 		return exec(d)
 	}
-	return gormx.RunWithAdvisoryLock(context.Background(), d, lockKeyInt(opts.LockKey), exec)
+	return gormx.RunWithAdvisoryLock(ctx, d, lockKeyInt(opts.LockKey), exec)
 }
 
 // runScripts 依次执行 install 与 upgrade 清单。
-func runScripts(d *gorm.DB, opts Options) error {
+func runScripts(ctx context.Context, d *gorm.DB, opts Options) error {
 	for _, script := range opts.Install {
-		if err := execScript(d, opts, script); err != nil {
+		if err := execScript(ctx, d, opts, script); err != nil {
 			return err
 		}
 	}
 	for _, script := range opts.Upgrade {
-		if err := execScript(d, opts, script); err != nil {
+		if err := execScript(ctx, d, opts, script); err != nil {
 			return err
 		}
 	}
@@ -103,7 +123,7 @@ func lockKeyInt(key string) int64 {
 }
 
 // execScript 执行一个 SQL 文件。
-func execScript(d *gorm.DB, opts Options, script string) error {
+func execScript(ctx context.Context, d *gorm.DB, opts Options, script string) error {
 	// path.Join 而非字符串拼接：embed.FS 走 fs.ValidPath，"./mysql/x" 这种
 	// 带前导成分的路径直接判不存在（Root="" 或 "." 的消费方会全量误报缺文件）。
 	path := path.Join(opts.Root, opts.Target, script)
@@ -124,7 +144,7 @@ func execScript(d *gorm.DB, opts Options, script string) error {
 				"script", path)
 			warnedDelimiter = true
 		}
-		if err := execStatement(d, path, i+1, stmt); err != nil {
+		if err := execStatement(ctx, d, path, i+1, stmt); err != nil {
 			return err
 		}
 	}
@@ -139,12 +159,13 @@ func isDelimiterDirective(stmt string) bool {
 }
 
 // execStatement 执行单条 SQL，必要时做幂等降级。
-func execStatement(d *gorm.DB, path string, idx int, stmt string) error {
+// 语句经 d.WithContext(ctx).Exec 执行（#177）：ctx 取消/超时即中断。
+func execStatement(ctx context.Context, d *gorm.DB, path string, idx int, stmt string) error {
 	trimmed := strings.TrimSpace(stmt)
 	if trimmed == "" {
 		return nil
 	}
-	err := d.Exec(trimmed).Error
+	err := d.WithContext(ctx).Exec(trimmed).Error
 	if err == nil {
 		return nil
 	}
@@ -154,7 +175,7 @@ func execStatement(d *gorm.DB, path string, idx int, stmt string) error {
 	// 整条跳过前，先尝试把「多列 ADD」拆成单列逐条执行 ——
 	// MySQL 的 ALTER TABLE ... ADD a, ADD b 是原子操作，只要有一列已存在就整条失败，
 	// 直接跳过会导致「已存在的列」后面那些**真正需要新增的列也被漏掉**。
-	if ok, splitErr := execSplitAlters(d, trimmed); ok {
+	if ok, splitErr := execSplitAlters(ctx, d, trimmed); ok {
 		if splitErr != nil {
 			return fmt.Errorf("执行 SQL 文件 %s 第 %d 条语句（拆分后）失败: %w\nSQL: %s", path, idx, splitErr, trimmed)
 		}
@@ -183,7 +204,7 @@ func execStatement(d *gorm.DB, path string, idx int, stmt string) error {
 //     ignorable 子句单独先执行/剥离，不动它就不该连坐 ADD 条目」。
 //
 // 返回 (是否发生了拆分, 首个非幂等错误)。
-func execSplitAlters(d *gorm.DB, stmt string) (bool, error) {
+func execSplitAlters(ctx context.Context, d *gorm.DB, stmt string) (bool, error) {
 	prefix, clauses, ok := splitAlterTable(stmt)
 	if !ok {
 		return false, nil
@@ -211,12 +232,12 @@ func execSplitAlters(d *gorm.DB, stmt string) (bool, error) {
 
 	// head 守卫（#164）：head 子句逐条单独先执行，绝不携带进 ADD 条目
 	for _, c := range headClauses {
-		if err := d.Exec(prefix + " " + c).Error; err != nil && !IsIgnorableError(err) {
+		if err := d.WithContext(ctx).Exec(prefix + " " + c).Error; err != nil && !IsIgnorableError(err) {
 			return true, err
 		}
 	}
 	for _, c := range addClauses {
-		if err := d.Exec(prefix + " " + c).Error; err != nil && !IsIgnorableError(err) {
+		if err := d.WithContext(ctx).Exec(prefix + " " + c).Error; err != nil && !IsIgnorableError(err) {
 			return true, err
 		}
 	}
@@ -284,47 +305,14 @@ func splitAlterTable(stmt string) (prefix string, clauses []string, ok bool) {
 
 // splitTopLevelClauses 按顶层逗号把 ALTER 子句列表切成单条（引号与括号内的
 // 逗号不切；空片段丢弃）。
+// 切分原语单源在 internal/sqltext（#175，带逃逸的正典版——此前本包是裸
+// 引号状态机、无反斜杠逃逸处理，与根包 redact 的同语义实现健壮性分叉）：
+// 含转义引号的子句（DEFAULT 'it\'s' 等）不再把逃逸后的引号误判为闭引号。
 func splitTopLevelClauses(s string) []string {
-	var parts []string
-	depth := 0
-	cur := strings.Builder{}
-	inQuote := byte(0)
-	for i := range len(s) {
-		c := s[i]
-		if inQuote != 0 {
-			cur.WriteByte(c)
-			if c == inQuote {
-				inQuote = 0
-			}
-			continue
-		}
-		switch c {
-		case '\'', '"', '`':
-			inQuote = c
-			cur.WriteByte(c)
-		case '(':
-			depth++
-			cur.WriteByte(c)
-		case ')':
-			depth = max(depth-1, 0)
-			cur.WriteByte(c)
-		case ',':
-			if depth == 0 {
-				parts = append(parts, cur.String())
-				cur.Reset()
-				continue
-			}
-			cur.WriteByte(c)
-		default:
-			cur.WriteByte(c)
-		}
-	}
-	if strings.TrimSpace(cur.String()) != "" {
-		parts = append(parts, cur.String())
-	}
+	parts := sqltext.SplitTopLevel(s, ',')
 	out := parts[:0]
 	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
+		if p != "" {
 			out = append(out, p)
 		}
 	}
