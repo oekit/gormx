@@ -1,5 +1,18 @@
 
 
+## [v0.11.14] — 2026-11-12
+
+- - refactor(singleton): Save/GetOrCreate 收敛 runWithUniqueRetry 单源（#172）——「FOR UPDATE 锁行读 + IsUniqueViolation 唯一冲突重试一次」的 for-attempt 骨架只此一份，两方法只留事务内策略闭包；#99/#112 类判据修补此后改一处生效
+- refactor(crud): BaseService 事务/非事务两条 Update 路径收敛 applyUpdate 五步管线（#173）——读行 → beforeUpdate → updateEntity 转换 → repo.Update（含 no-op 口径）→ afterUpdate 只此一份，分支只剩 load/persist 两个闭包；错误出口统一 updateOutErr（not-found → notFoundError，其余 → outErr）
+- refactor: 标识符白名单正则单源 internal/sqlident（#174）——根包 SubqueryIn column 与 crud Where/Or field 共用一份（crud 是 ORM 无关包、根包不依赖它，双向都不宜 import 对方）；错误文案改引 PlainPattern 常量，排序/投影复合白名单拼接 PlainBody 同源
+- refactor: 「引号/括号感知的顶层分隔符切分」单源 internal/sqltext（#175）——redact 与 migrate 同用一份带逃逸的正典版；逃逸口径裁定以 redact 版（#138）为准：双写引号与反斜杠转义均识别，migrate 旧版裸引号状态机无逃逸处理；migrate.splitTopLevelClauses 换源后顺带获得反斜杠逃逸能力，对含转义引号的 DDL（DEFAULT 'it\\'s,x' 等）是修正而非回归
+- refactor(logger): Trace 三分支重复的 traceSQL + rowsStr 格式化块收口 emitSQL（#176）——公共字段（caller/elapsed_ms/rows/sql，SQL 过 redactor）统一拼装，三分支只留判级与差异字段（err/threshold）
+- fix(migrate): 新增 RunContext(ctx, d, opts)，ctx 贯穿全链路（#177）——每条语句 d.WithContext(ctx).Exec（DDL 可取消/超时中断）、LockKey 路径 ctx 进 RunWithAdvisoryLock（MySQL GET_LOCK(?, -1) 无限阻塞拿锁可被 ctx 取消中断）；Run 保留为 RunContext(context.Background()) 薄包装，旧签名兼容不 BREAKING
+- fix(redact): redactor 正则编译失败不再静默降级为「不脱敏」（#178）——打 ERROR 告警（列名清单 + err）并 fail-closed：redact 整句替换 ***，与「空集返回 nil = 未配置」严格区分（旧 fail-open 使 #106 要防的泄漏面静默重开）
+- chore: 抬地板 go 1.26.0 + logx v0.10.0 + pkg v0.45.0（依赖仓本战役已发新 tag，先小 PR 抬地板合入再 train）；ci.yml go-version '1.26'
+
+关联问题单：gormx#172、gormx#173、gormx#174、gormx#175、gormx#176、gormx#177、gormx#178。
+
 ## [v0.11.13] — 2026-11-11
 
 - fix(migrate): execSplitAlters 的非 ADD 守卫补查 head（#164）——首个 ADD 之前的非 ADD 子句（DROP/CHANGE/MODIFY）此前漏检，并被携带进每条拆分语句：head 的 ignorable 失败把要加的列整条连坐吞掉（execSplitAlters 却报「多列 ALTER 已拆分执行」，迁移绿、schema 永久缺列）。现按单里修法「head 的可 ignorable 子句单独先执行/剥离」：head 子句逐条单独先执行（失败 ignorable 跳过、否则上抛），ADD 条目只带 `ALTER TABLE <表>` 前缀裸拆；tail 混入非 ADD 子句仍按契约不做拆分，且收紧为守卫命中即零执行
