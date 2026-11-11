@@ -326,6 +326,68 @@ func (s *BaseService[T, ID, C, U]) Update(ctx context.Context, id ID, req *U) (*
 	return s.updateNoTx(ctx, id, req)
 }
 
+// applyUpdate 是 Update 两条路径共用的五步管线（#173 收敛单源）：
+// 读行 → beforeUpdate → updateEntity 转换 → repo.Update（含 no-op 口径）→
+// afterUpdate。两条路径的差异只剩读/写两个闭包：
+//
+//   - load：事务路径传 GetByIDForUpdate（行锁读），无事务路径传 GetByID；
+//   - persist：写步（事务路径传事务内 repo.Update，无事务路径直接 repo.Update）。
+//
+// 错误一律原样上抛，not-found / outErr 映射由调用方出口 updateOutErr 统一
+// 处理（事务路径在 RunInTx 返回后映射，无事务路径直接映射——两出口同判据）。
+func (s *BaseService[T, ID, C, U]) applyUpdate(
+	ctx context.Context,
+	id ID,
+	req *U,
+	load func() (*T, error),
+	persist func(entity *T) (int64, error),
+) (*T, error) {
+	entity, err := load()
+	if err != nil {
+		return nil, err
+	}
+
+	if s.beforeUpdate != nil {
+		if hookErr := s.beforeUpdate(ctx, id, req, entity); hookErr != nil {
+			return nil, hookErr
+		}
+	}
+
+	// 回归修复：忘 SetUpdateEntity 时持久化层只会得到一次无变更的 Save，
+	// 必须显式报错而不是假成功。检查顺序两条路径一致（读行 → beforeUpdate
+	// → updateEntity）。
+	if s.updateEntity == nil {
+		return nil, fmt.Errorf("crud: updateEntity converter not set; call SetUpdateEntity before Update")
+	}
+	s.updateEntity(entity, req)
+
+	rows, err := persist(entity)
+	if err != nil {
+		return nil, err
+	}
+	if rows == 0 && s.cfg.noOpUpdateAsNotFound {
+		// no-op 口径：0 行 → not-found（事务路径随整体回滚；默认口径下
+		// 视为成功，不误报）
+		return nil, fmt.Errorf("%w: id=%v", ErrNotFound, id)
+	}
+
+	if s.afterUpdate != nil {
+		if err := s.afterUpdate(ctx, entity); err != nil {
+			return nil, err
+		}
+	}
+	return entity, nil
+}
+
+// updateOutErr 是 Update 两条路径共用的对外错误出口（#173 收敛后单源）：
+// not-found 哨兵 → notFoundError（默认 BizCode=404），其余经 outErr 映射。
+func (s *BaseService[T, ID, C, U]) updateOutErr(err error) error {
+	if errors.Is(err, ErrNotFound) {
+		return s.notFoundError(err)
+	}
+	return s.outErr(err)
+}
+
 // updateInTx 事务路径：行锁读 → 业务转换 → 写入，原子提交。
 // found 语义：ErrNotFound 只在读步「确实无行」时返回；写步命中 0 行（no-op）
 // 按 WithNoOpUpdateAsNotFound 口径处理（默认视为成功）。
@@ -336,45 +398,18 @@ func (s *BaseService[T, ID, C, U]) updateInTx(ctx context.Context, txRepo TxRepo
 		if !ok {
 			return fmt.Errorf("crud: tx repo does not implement TxRepository")
 		}
-		entity, err := lockRepo.GetByIDForUpdate(ctx, id)
+		entity, err := s.applyUpdate(ctx, id, req,
+			func() (*T, error) { return lockRepo.GetByIDForUpdate(ctx, id) },
+			func(entity *T) (int64, error) { return repo.Update(ctx, entity, s.updateWriteOptions()...) },
+		)
 		if err != nil {
-			return err
-		}
-
-		if s.beforeUpdate != nil {
-			if hookErr := s.beforeUpdate(ctx, id, req, entity); hookErr != nil {
-				return hookErr
-			}
-		}
-
-		// 检查顺序与无事务路径一致（GetByID → beforeUpdate → updateEntity）
-		if s.updateEntity == nil {
-			return fmt.Errorf("crud: updateEntity converter not set; call SetUpdateEntity before Update")
-		}
-		s.updateEntity(entity, req)
-
-		rows, err := repo.Update(ctx, entity, s.updateWriteOptions()...)
-		if err != nil {
-			return err
-		}
-		if rows == 0 && s.cfg.noOpUpdateAsNotFound {
-			// no-op 口径：0 行 → not-found（入事务，整体回滚）
-			return fmt.Errorf("%w: id=%v", ErrNotFound, id)
-		}
-
-		if s.afterUpdate != nil {
-			if err := s.afterUpdate(ctx, entity); err != nil {
-				return err // 入事务：钩子失败整体回滚
-			}
+			return err // 入事务：任一步失败整体回滚（含 afterUpdate 钩子）
 		}
 		result = entity
 		return nil
 	})
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, s.notFoundError(err)
-		}
-		return nil, s.outErr(err)
+		return nil, s.updateOutErr(err)
 	}
 	return result, nil
 }
@@ -383,42 +418,13 @@ func (s *BaseService[T, ID, C, U]) updateInTx(ctx context.Context, txRepo TxRepo
 // found 语义：ErrNotFound 只在读步「确实无行」时返回；写步命中 0 行（no-op）
 // 按 WithNoOpUpdateAsNotFound 口径处理（默认视为成功）。
 func (s *BaseService[T, ID, C, U]) updateNoTx(ctx context.Context, id ID, req *U) (*T, error) {
-	entity, err := s.repo.GetByID(ctx, id)
+	entity, err := s.applyUpdate(ctx, id, req,
+		func() (*T, error) { return s.repo.GetByID(ctx, id) },
+		func(entity *T) (int64, error) { return s.repo.Update(ctx, entity, s.updateWriteOptions()...) },
+	)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, s.notFoundError(err)
-		}
-		return nil, s.outErr(err)
+		return nil, s.updateOutErr(err)
 	}
-
-	if s.beforeUpdate != nil {
-		if hookErr := s.beforeUpdate(ctx, id, req, entity); hookErr != nil {
-			return nil, s.outErr(hookErr)
-		}
-	}
-
-	// 回归修复：忘 SetUpdateEntity 时持久化层只会得到一次无变更的 Save，
-	// 必须显式报错而不是假成功。
-	if s.updateEntity == nil {
-		return nil, s.outErr(fmt.Errorf("crud: updateEntity converter not set; call SetUpdateEntity before Update"))
-	}
-	s.updateEntity(entity, req)
-
-	rows, err := s.repo.Update(ctx, entity, s.updateWriteOptions()...)
-	if err != nil {
-		return nil, s.outErr(err)
-	}
-	if rows == 0 && s.cfg.noOpUpdateAsNotFound {
-		// no-op 口径：0 行 → not-found（默认口径下视为成功，不误报）
-		return nil, s.notFoundError(fmt.Errorf("%w: id=%v", ErrNotFound, id))
-	}
-
-	if s.afterUpdate != nil {
-		if err := s.afterUpdate(ctx, entity); err != nil {
-			return nil, s.outErr(err)
-		}
-	}
-
 	return entity, nil
 }
 

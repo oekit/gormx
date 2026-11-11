@@ -2,8 +2,8 @@ package gormx
 
 import (
 	"fmt"
-	"regexp"
 
+	"github.com/oekit/gormx/internal/sqlident"
 	"gorm.io/gorm"
 	gclause "gorm.io/gorm/clause"
 )
@@ -57,13 +57,13 @@ func DeleteBySubquery(db *gorm.DB, model any, column string, sub *gorm.DB) *gorm
 }
 
 // subqueryColumnPattern 是 column 的标识符白名单（#122）：字母/下划线开头，
-// 仅含字母、数字、下划线与点（表限定名 t.col）。与 crud 包 Where/Or 字段名
-// 的 #100 白名单同款（^[A-Za-z_][A-Za-z0-9_.]*$）——column 名与 field 名一样
-// 是「最可能从 config/query 参数流入 SQL 的值」，两个渲染面都要兜住：外层
-// IN 走 clause.Column（Quote 安全），mysql 派生表内层走 Select(string) 原样
-// 渲染（gorm 的 Select 不接受 clause.Column 值）⇒ 内层是裸拼面，必须
-// fail-closed 拒白名单外的形态（逗号多列/括号/表达式/子查询）。
-var subqueryColumnPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*$`)
+// 仅含字母、数字、下划线与点（表限定名 t.col）。单源在 internal/sqlident
+// （#174，与 crud 包 Where/Or 字段名的 #100 纪律同一份）——column 名与
+// field 名一样是「最可能从 config/query 参数流入 SQL 的值」，两个渲染面
+// 都要兜住：外层 IN 走 clause.Column（Quote 安全），mysql 派生表内层走
+// Select(string) 原样渲染（gorm 的 Select 不接受 clause.Column 值）⇒ 内层
+// 是裸拼面，必须 fail-closed 拒白名单外的形态（逗号多列/括号/表达式/子查询）。
+const subqueryColumnPattern = sqlident.PlainPattern
 
 // subqueryInExpr 构造 `column IN (...)` 表达式：mysql 走派生表包装，
 // 其余方言直出。列名经 gorm 方言 Quote（“ `id` “ / "id"），column 经
@@ -72,9 +72,9 @@ func subqueryInExpr(db *gorm.DB, column string, sub *gorm.DB) (gclause.Expressio
 	if column == "" {
 		return nil, fmt.Errorf("gormx: SubqueryIn requires non-empty column")
 	}
-	if !subqueryColumnPattern.MatchString(column) {
+	if !sqlident.Match(column) {
 		return nil, fmt.Errorf("gormx: SubqueryIn column %q is not a plain identifier "+
-			"(expected [A-Za-z_][A-Za-z0-9_.]*, same discipline as crud Where/Or #100)", column)
+			"(expected %s, same discipline as crud Where/Or #100)", column, subqueryColumnPattern)
 	}
 	if sub == nil || sub.Statement == nil {
 		return nil, fmt.Errorf("gormx: SubqueryIn requires a non-nil subquery chain")

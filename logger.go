@@ -3,7 +3,7 @@ package gormx
 import (
 	"context"
 	"errors"
-	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/oekit/logx"
@@ -101,51 +101,46 @@ func (l *Logger) Trace(ctx context.Context, begin time.Time, fc func() (sql stri
 	caller := utils.FileWithLineNum()
 	elapsedMs := float64(elapsed.Nanoseconds()) / 1e6
 
-	// 列级脱敏（#106）：Explain 后的完整语句在输出前过 redactor；
-	// 未配置时 redact 为 nil，语句原样（零开销直通）。
-	traceSQL := func() (string, int64) {
-		sql, rows := fc()
-		return l.redact.redact(sql), rows
-	}
-
 	switch {
 	case err != nil && l.LogLevel >= gormLogger.Error && (!errors.Is(err, gormLogger.ErrRecordNotFound) || !l.IgnoreRecordNotFoundError):
-		sql, rows := traceSQL()
-		rowsStr := fmt.Sprintf("%d", rows)
-		if rows == -1 {
-			rowsStr = "-"
-		}
-		l.log.CtxError(ctx, "SQL error",
-			"caller", caller,
-			"elapsed_ms", elapsedMs,
-			"rows", rowsStr,
-			"sql", sql,
-			"err", err,
-		)
+		l.emitSQL(ctx, fc, caller, elapsedMs, gormLogger.Error, "SQL error", "err", err)
 	case elapsed > l.SlowThreshold && l.SlowThreshold != 0 && l.LogLevel >= gormLogger.Warn:
-		sql, rows := traceSQL()
-		rowsStr := fmt.Sprintf("%d", rows)
-		if rows == -1 {
-			rowsStr = "-"
-		}
-		l.log.CtxWarn(ctx, "slow SQL",
-			"caller", caller,
-			"threshold", l.SlowThreshold.String(),
-			"elapsed_ms", elapsedMs,
-			"rows", rowsStr,
-			"sql", sql,
-		)
+		l.emitSQL(ctx, fc, caller, elapsedMs, gormLogger.Warn, "slow SQL", "threshold", l.SlowThreshold.String())
 	case l.LogLevel == gormLogger.Info:
-		sql, rows := traceSQL()
-		rowsStr := fmt.Sprintf("%d", rows)
-		if rows == -1 {
-			rowsStr = "-"
-		}
-		l.log.CtxInfo(ctx, "SQL",
-			"caller", caller,
-			"elapsed_ms", elapsedMs,
-			"rows", rowsStr,
-			"sql", sql,
-		)
+		l.emitSQL(ctx, fc, caller, elapsedMs, gormLogger.Info, "SQL")
 	}
+}
+
+// emitSQL 收口 Trace 三个分支重复的「traceSQL + rowsStr + 公共字段」块
+// （#176）：SQL 过 redactor（#106 列级脱敏，未配置时 nil 直通）、rows == -1
+// 显示 "-"、caller/elapsed_ms/rows/sql 公共字段统一在此拼装；三个分支只留
+// 判级（switch）与差异字段（err / threshold）。fc 惰性取值：仅分支命中时
+// 才执行（与原实现一致，Silent 判级之外零开销）。
+func (l *Logger) emitSQL(ctx context.Context, fc func() (string, int64), caller string, elapsedMs float64, level gormLogger.LogLevel, msg string, extra ...any) {
+	sql, rows := fc()
+	fields := make([]any, 0, 8+len(extra))
+	fields = append(fields,
+		"caller", caller,
+		"elapsed_ms", elapsedMs,
+		"rows", formatRows(rows),
+		"sql", l.redact.redact(sql),
+	)
+	fields = append(fields, extra...)
+
+	switch level {
+	case gormLogger.Error:
+		l.log.CtxError(ctx, msg, fields...)
+	case gormLogger.Warn:
+		l.log.CtxWarn(ctx, msg, fields...)
+	default:
+		l.log.CtxInfo(ctx, msg, fields...)
+	}
+}
+
+// formatRows 把影响行数格式化为日志值：-1（未知，非 SELECT 语句等）显示 "-"。
+func formatRows(rows int64) string {
+	if rows == -1 {
+		return "-"
+	}
+	return strconv.FormatInt(rows, 10)
 }
