@@ -1,5 +1,9 @@
 
 
+## [v0.11.15] — 2026-11-13
+
+- 9 单修复批：GetByIDForUpdate 主键 QuoteTo 参数化（#194）、scoper fail-closed（#195）、Omit 白名单收口（#196）等；地板对齐 pkg v0.47.0。
+
 ## [v0.11.14] — 2026-11-12
 
 - - refactor(singleton): Save/GetOrCreate 收敛 runWithUniqueRetry 单源（#172）——「FOR UPDATE 锁行读 + IsUniqueViolation 唯一冲突重试一次」的 for-attempt 骨架只此一份，两方法只留事务内策略闭包；#99/#112 类判据修补此后改一处生效
