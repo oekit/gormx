@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/oekit/logx"
 	"gorm.io/gorm"
 )
 
@@ -80,7 +81,7 @@ func RunWithAdvisoryLock(ctx context.Context, db *gorm.DB, key int64, fn func(tx
 			// context.Background()，调用方 ctx 已取消也必须尽力解锁
 			if uerr := conn.WithContext(context.Background()).Exec(unlockSQL, key).Error; uerr != nil {
 				gormLog.Error("advisory unlock failed: 会话锁将泄漏到持锁连接关闭（池 lifetime 兜底）",
-					"key", key, "err", uerr)
+					"key", key, logx.ErrKey, uerr)
 			}
 		}()
 		return fn(conn.WithContext(ctx))

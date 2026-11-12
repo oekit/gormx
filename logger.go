@@ -103,7 +103,7 @@ func (l *Logger) Trace(ctx context.Context, begin time.Time, fc func() (sql stri
 
 	switch {
 	case err != nil && l.LogLevel >= gormLogger.Error && (!errors.Is(err, gormLogger.ErrRecordNotFound) || !l.IgnoreRecordNotFoundError):
-		l.emitSQL(ctx, fc, caller, elapsedMs, gormLogger.Error, "SQL error", "err", err)
+		l.emitSQL(ctx, fc, caller, elapsedMs, gormLogger.Error, "SQL error", logx.ErrKey, err)
 	case elapsed > l.SlowThreshold && l.SlowThreshold != 0 && l.LogLevel >= gormLogger.Warn:
 		l.emitSQL(ctx, fc, caller, elapsedMs, gormLogger.Warn, "slow SQL", "threshold", l.SlowThreshold.String())
 	case l.LogLevel == gormLogger.Info:
