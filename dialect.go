@@ -43,7 +43,7 @@ func QuoteIdentifier(db *gorm.DB, name string) string {
 		return ""
 	}
 	var b strings.Builder
-	db.Dialector.QuoteTo(&b, name)
+	dialectorOf(db).QuoteTo(&b, name)
 	return b.String()
 }
 
@@ -90,7 +90,8 @@ func DateBucket(db *gorm.DB, column string) gclause.Expr {
 		panic("gormx: DateBucket requires a non-empty column name")
 	}
 	col := QuoteIdentifier(db, column)
-	switch db.Dialector.Name() {
+	d := dialectorOf(db)
+	switch d.Name() {
 	case "mysql":
 		return gclause.Expr{SQL: "DATE(" + col + ")"}
 	case "postgres":
@@ -98,15 +99,22 @@ func DateBucket(db *gorm.DB, column string) gclause.Expr {
 	case "sqlite":
 		return gclause.Expr{SQL: "date(" + col + ")"}
 	default:
-		panic(fmt.Sprintf("gormx: DateBucket does not support dialect %q (mysql/postgres/sqlite only, gormx#189)", db.Dialector.Name()))
+		panic(fmt.Sprintf("gormx: DateBucket does not support dialect %q (mysql/postgres/sqlite only, gormx#189)", d.Name()))
 	}
+}
+
+// dialectorOf 返回连接的 Dialector（requireDialector 校验后恒非 nil）：
+// 经函数出口取用而非 db.Dialector.X 链式选择器——Config.Dialector 字段名与
+// 类型同名，链式写法会被 staticcheck QF1008 判成冗余嵌入层穿透。
+func dialectorOf(db *gorm.DB) gorm.Dialector {
+	return db.Dialector
 }
 
 // dateDeltaExpr 是 NowMinusDays/TodayMinusDays 的方言分派单源：SQL 文本静态、
 // days 走绑定参数（各驱动DryRun 参数绑定见 dialect_test.go）。
 func dateDeltaExpr(db *gorm.DB, today bool, days int) gclause.Expr {
 	requireDialector(db, "date delta")
-	name := db.Dialector.Name()
+	name := dialectorOf(db).Name()
 	switch name {
 	case "mysql":
 		if today {
