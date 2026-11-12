@@ -108,7 +108,7 @@ func (r *SingletonRepo[T]) Get(ctx context.Context) (T, error) {
 // GetID() > 0 区分）与当前事务句柄 tx；fn 的错误参与同一重试判定。
 func (r *SingletonRepo[T]) runWithUniqueRetry(ctx context.Context, col string, fn func(tx *gorm.DB, existing T) error) error {
 	var err error
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			var existing T
 			qerr := tx.Clauses(gclause.Locking{Strength: "UPDATE"}).

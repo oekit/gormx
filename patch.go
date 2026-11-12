@@ -90,7 +90,7 @@ func patchUpdates[M any](db *gorm.DB, patch any) (map[string]any, error) {
 
 	t := v.Type()
 	updates := make(map[string]any, t.NumField())
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		field := t.Field(i)
 		if !field.IsExported() {
 			return nil, fmt.Errorf("gormx: SavePatch: patch 字段 %s 未导出（补丁字段必须全部导出）", field.Name)
