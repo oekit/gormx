@@ -498,8 +498,21 @@ func (q *Query) Select(fields ...string) *Query {
 }
 
 // Omit 排除特定字段。
+//
+// 字段名走标识符白名单（同 Where 的 field，#154 收口补齐本方法）：白名单
+// 外的值（非法/拼错的排除列名）丢弃并经 recordFailClosed 累计进 Err()、
+// Strict() 模式下当场 panic——此前 Omit 是 Query 构建器里唯一不设防的列名
+// 入口，非法列名零信号静默失效（想排除的列仍被读出/写穿），与 Select/
+// Order/GroupBy/Preload 的 fail-closed 口径相反。Omit 列名只与 schema 字段
+// 名匹配、不拼入 SQL，无注入面——本条是信号面与 #154 一致性收口。
 func (q *Query) Omit(fields ...string) *Query {
-	q.omits = append(q.omits, fields...)
+	for _, f := range fields {
+		if !isValidField(f) {
+			q.recordFailClosed(fmt.Sprintf("crud: Omit(%q) 未通过字段白名单（裸标识符），已丢弃（#154）", f))
+			continue
+		}
+		q.omits = append(q.omits, f)
+	}
 	return q
 }
 

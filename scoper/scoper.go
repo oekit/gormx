@@ -22,9 +22,10 @@
 //
 // # fail-closed 契约
 //
-// 规则未配置完整（ownerColumn 空 / ownerOf nil）时：SQL 面注入恒假 1=0、
-// 内存面恒 false——可见性规则缺失时宁可全不可见，绝不无过滤放行
-// （与 crud 包 Query 的 fail-closed 同一纪律）。
+// 规则未配置完整（ownerColumn 空 / ownerOf nil；配置了 WithBuiltinRows 时
+// column 空 / match nil，#195）时：SQL 面注入恒假 1=0、内存面恒 false——
+// 可见性规则缺失时宁可全不可见，绝不无过滤放行（与 crud 包 Query 的
+// fail-closed 同一纪律）。
 package scoper
 
 import (
@@ -79,15 +80,28 @@ func NewRule[T any](ownerColumn string, ownerOf func(T) int64, opts ...RuleOptio
 // WithBuiltinRows 声明内置行可见：非 admin 主体除本人行外还可见
 // `<column> = <value>` 的行（SQL 面 owner = ? OR column = value；
 // 内存面 ownerOf(row) == uid 或 match(row)）。column 禁止拼入用户输入。
+//
+// column 为空或 match 为 nil 属非法配置：规则**整体**走 fail-closed
+// （SQL 面恒假 1=0、内存面恒 false，#195）——此前不在完整性判定里，
+// match nil 在 Allows 内存面 nil func call 直接 panic、column 空在 Scope
+// SQL 面拼出非法 SQL（500），都不是声明的 fail-closed 形态。
 func WithBuiltinRows[T any](column string, value any, match func(T) bool) RuleOption[T] {
 	return func(r *Rule[T]) {
 		r.builtin = &builtinRule[T]{column: column, value: value, match: match}
 	}
 }
 
-// valid 报告规则是否配置完整（fail-closed 判定用）。
+// valid 报告规则是否配置完整（fail-closed 判定用）：owner 侧与 builtin 侧
+// 任一缺失即不完整（#195——builtin 误配此前不在判定里，两面表现分别为
+// 内存面 panic 与 SQL 面 500，与包文档声明的「恒假 1=0 / 恒 false」不符）。
 func (r *Rule[T]) valid() bool {
-	return r != nil && r.ownerColumn != "" && r.ownerOf != nil
+	if r == nil || r.ownerColumn == "" || r.ownerOf == nil {
+		return false
+	}
+	if r.builtin != nil && (r.builtin.column == "" || r.builtin.match == nil) {
+		return false
+	}
+	return true
 }
 
 // Scope 返回 SQL 面的 GORM scope 函数：
