@@ -8,7 +8,7 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/gormx@v0.11.13
+go get github.com/oekit/gormx@v0.11.14
 ```
 
 ## 这个仓库做什么
