@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/oekit/gormx"
 	"github.com/oekit/gormx/crud"
@@ -258,6 +259,28 @@ func (r *GormRepository[T, ID]) List(ctx context.Context, q *crud.Query) ([]T, i
 // 等同越权写旁路。改用 Select + Updates 更新，scope WHERE
 // 与主键条件合并且无 upsert 旁路（0 行即结束，不插入）。
 func (r *GormRepository[T, ID]) Update(ctx context.Context, entity *T, opts ...crud.UpdateOption) (int64, error) {
+	// gormx#198：主键为零值的实体 + 查询装饰器时，GORM 的
+	// ErrMissingWhereClause 安全网被装饰器注入的 WHERE 顶替——单行更新
+	// 静默放大为 scope 内全表 UPDATE（err==nil、RowsAffected=N，无告警；
+	// 无装饰器时 GORM 显式报错，两种配置行为相反）。入口先按 schema 语义
+	// 校验主键非零（指针/自定义 Valuer 的零值判定走 field.ValueOf），把
+	// 「静默全表写」变成显式错误，与同文件其余按 ID 路径的显式主键条件
+	// 纪律统一。
+	rv := reflect.Indirect(reflect.ValueOf(entity))
+	if !rv.IsValid() {
+		return 0, fmt.Errorf("gormx: Update requires a non-nil entity")
+	}
+	parse := &gorm.Statement{DB: r.db}
+	if err := parse.Parse(entity); err != nil {
+		return 0, fmt.Errorf("gormx: parse update entity schema: %w", err)
+	}
+	field := parse.Schema.PrioritizedPrimaryField
+	if field == nil || field.DBName == "" {
+		return 0, fmt.Errorf("gormx: update entity %T has no primary key column", entity)
+	}
+	if _, isZero := field.ValueOf(ctx, rv); isZero {
+		return 0, fmt.Errorf("gormx: Update requires non-zero primary key on entity %T（零主键 + 查询装饰器会把单行更新静默放大为 scope 内全表 UPDATE，gormx#198）", entity)
+	}
 	db, err := r.scopedDB(ctx)
 	if err != nil {
 		return 0, err

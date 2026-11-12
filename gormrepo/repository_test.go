@@ -5,6 +5,7 @@ import (
 
 	"errors"
 	"github.com/oekit/gormx/crud"
+	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -706,5 +707,62 @@ func TestWrapUniqueViolation_KeepsDriverErrorInChain(t *testing.T) {
 	}
 	if wrapUniqueViolation(nil) != nil {
 		t.Fatal("nil must pass through")
+	}
+}
+
+// TestGormRepository_Update_ZeroPrimaryKey_FailFast 回归（gormx#198）：零
+// 主键实体 + 查询装饰器时，GORM 的 ErrMissingWhereClause 安全网被装饰器
+// 注入的 WHERE 顶替——单行更新静默放大为 scope 内全表 UPDATE（err==nil、
+// RowsAffected=N）。修复后入口 fail-fast：零主键显式报错、零行被改；
+// 主键非零路径不受影响（单行语义保持）。
+func TestGormRepository_Update_ZeroPrimaryKey_FailFast(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	for _, name := range []string{"r1", "r2", "r3"} {
+		if err := db.Create(&testUser{Name: name, Age: 30}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	decorated := NewGormRepository[testUser, int64](db,
+		WithQueryDecorator[testUser](func(ctx context.Context) func(*gorm.DB) *gorm.DB {
+			return func(d *gorm.DB) *gorm.DB { return d.Where("age > ?", 0) }
+		}))
+
+	// 零主键 + 有装饰器：必须报错（不再静默全表写）
+	_, zeroErr := decorated.Update(ctx, &testUser{Name: "ZERO"})
+	if zeroErr == nil {
+		t.Fatal("zero-PK Update must fail fast (gormx#198), got nil error")
+	}
+	if !strings.Contains(zeroErr.Error(), "primary key") {
+		t.Errorf("error must point at zero primary key, got %v", zeroErr)
+	}
+	var n int64
+	if err := db.Model(&testUser{}).Where("name = ?", "ZERO").Count(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("zero-PK update must change 0 rows, got %d rows overwritten", n)
+	}
+
+	// 零主键 + 无装饰器：同样 fail-fast（错误口径统一为显式主键提示，比
+	// GORM 的 ErrMissingWhereClause 更靠近根因）
+	plain := NewGormRepository[testUser, int64](db)
+	if _, plainErr := plain.Update(ctx, &testUser{Name: "ZERO"}); plainErr == nil {
+		t.Fatal("zero-PK Update without decorator must also fail fast (gormx#198)")
+	}
+
+	// 对照：主键非零 + 有装饰器，单行更新语义保持
+	var target testUser
+	if err := db.Where("name = ?", "r1").First(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	target.Name = "r1-upd"
+	rows, err := decorated.Update(ctx, &target)
+	if err != nil {
+		t.Fatalf("non-zero PK update: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("non-zero PK update rows = %d, want 1", rows)
 	}
 }
