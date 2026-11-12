@@ -95,7 +95,7 @@ func setField(tx *gorm.DB, fieldName string, value int64) {
 	case reflect.Struct:
 		setStructInt64Field(rv, fieldName, value)
 	case reflect.Slice, reflect.Array:
-		for i := 0; i < rv.Len(); i++ {
+		for i := range rv.Len() {
 			elem := rv.Index(i)
 			if elem.Kind() == reflect.Pointer {
 				elem = elem.Elem()
