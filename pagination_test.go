@@ -364,3 +364,40 @@ func TestPage_Scope_RealDB(t *testing.T) {
 		t.Errorf("page 2 should be ids [11..20], got [%d..%d]", items[0].ID, items[9].ID)
 	}
 }
+
+// TestPaginateScope_NilRequestFallsBackToDefaults 回归（gormx#180）：req 为
+// nil 时按默认页兜底（与同文件 Paginate 的 nil 兜底同一口径）——旧实现在
+// 查询执行期 nil deref panic，同文件两个入口一处兜底一处炸的不一致就此消除。
+func TestPaginateScope_NilRequestFallsBackToDefaults(t *testing.T) {
+	db := newTestDB(t, &TestBase{})
+	for i := 1; i <= 30; i++ {
+		if err := db.Create(&TestBase{Name: fmt.Sprintf("row-%d", i)}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// nil req：不 panic，按默认页（page=1 / pageSize=20）生效
+	var items []TestBase
+	if err := db.Scopes(PaginateScope(nil)).Find(&items).Error; err != nil {
+		t.Fatalf("nil req must fall back to defaults, got panic/err: %v", err)
+	}
+	if len(items) != pagination.DefaultPageSize {
+		t.Fatalf("nil req items = %d, want default page size %d", len(items), pagination.DefaultPageSize)
+	}
+	var total int64
+	if err := db.Model(&TestBase{}).Count(&total).Error; err != nil {
+		t.Fatal(err)
+	}
+	_ = total
+
+	// 对照：nil req 与显式默认页请求同 LIMIT/OFFSET 口径
+	stmtNil := db.Session(&gorm.Session{DryRun: true}).Model(&TestBase{}).
+		Scopes(PaginateScope(nil)).Find(&[]TestBase{}).Statement
+	stmtExplicit := db.Session(&gorm.Session{DryRun: true}).Model(&TestBase{}).
+		Scopes(PaginateScope(pagination.NewPageRequest(pagination.DefaultPage, pagination.DefaultPageSize))).
+		Find(&[]TestBase{}).Statement
+	if stmtNil.SQL.String() != stmtExplicit.SQL.String() {
+		t.Fatalf("nil req scope SQL = %s, want identical to explicit default %s",
+			stmtNil.SQL.String(), stmtExplicit.SQL.String())
+	}
+}

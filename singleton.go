@@ -42,8 +42,15 @@ type SingletonRepo[T Model] struct {
 }
 
 // NewSingletonRepo 创建单例仓库。
-// defaultVal 返回当记录不存在时的默认值。
+// defaultVal 返回当记录不存在时的默认值；nil 属构造期编程错误，直接 panic
+// （gormx#182，与仓内构造期 fail-fast 纪律一致）：懒校验会把故障推迟到
+// 「线上空表首次 Get/GetOrCreate」才以 nil func deref panic 爆出——数据
+// 依赖的延迟故障，出事点与根因点距离最远、排查成本最高。构造期响亮拒绝
+// 后，Save/Get/GetOrCreate 不再各自校验（单一校验点）。
 func NewSingletonRepo[T Model](db *gorm.DB, defaultVal func() T) *SingletonRepo[T] {
+	if defaultVal == nil {
+		panic("gormx: NewSingletonRepo requires a non-nil defaultVal func (empty-table Get/GetOrCreate would lazy-panic, gormx#182)")
+	}
 	return &SingletonRepo[T]{db: db, defaultVal: defaultVal}
 }
 

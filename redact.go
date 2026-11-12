@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/oekit/gormx/internal/sqltext"
+	"github.com/oekit/logx"
 )
 
 // redactor 是 SQL 日志的列级脱敏器（#106）：按列名把绑定值替换为 ***，
@@ -77,7 +78,7 @@ func newRedactor(cols []string) *redactor {
 		// 不得静默降级为「不脱敏」——敏感列配置存在而整体失效是安全事件
 		// 形态，先告警（列名清单 + err）再 fail-closed。
 		gormLog.Error("SQL 脱敏器正则编译失败：已 fail-closed，所有 SQL 日志按脱敏处理（整句 ***）；请检查 WithRedactColumns 列名配置",
-			"columns", cols, "err", err)
+			"columns", cols, logx.ErrKey, err)
 		return &redactor{columns: normalized, broken: true}
 	}
 	return &redactor{columns: normalized, assignment: re}

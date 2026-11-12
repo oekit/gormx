@@ -171,8 +171,16 @@ func applyPrimaryKeyTiebreak(db *gorm.DB) *gorm.DB {
 }
 
 // PaginateScope 返回一个 GORM Scope 函数，自动应用分页的 Offset 和 Limit。
+//
+// req 为 nil 时按默认页兜底（gormx#180，与同文件 Paginate 的 nil 兜底同一
+// 口径）：handler 忘绑定分页参数时传 nil 是常见笔误——同文件两个入口此前
+// 一处兜底一处查询执行期 nil deref panic 的不一致就此消除。Offset/Limit
+// 经 PageRequest 的只读归一化口径（与 Paginate 相同）。
 func PaginateScope(req *pagination.PageRequest) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
+		if req == nil {
+			req = pagination.NewPageRequest(pagination.DefaultPage, pagination.DefaultPageSize)
+		}
 		return db.Offset(req.Offset()).Limit(req.Limit())
 	}
 }

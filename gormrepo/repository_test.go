@@ -548,3 +548,112 @@ func TestGormRepository_ExistsCount_ForUpdateNoLeak(t *testing.T) {
 		t.Errorf("Count = %d, want 1", total)
 	}
 }
+
+// uniqueEmailUser 唯一索引测试模型（gormx#181）。
+type uniqueEmailUser struct {
+	ID    int64  `gorm:"primaryKey;autoIncrement"`
+	Email string `gorm:"size:200;uniqueIndex"`
+	Name  string `gorm:"size:100"`
+}
+
+func setupUniqueDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&uniqueEmailUser{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return db
+}
+
+// TestGormRepository_DuplicateKeySentinel 回归（gormx#181）：唯一键冲突经
+// 实现层出口统一映射为 crud.ErrDuplicateKey 哨兵（errors.Is 可判）——消费方
+// 不再退化到驱动文案子串匹配；原始驱动错误仍在链上（errors.As 可达）；
+// 非唯一冲突错误原样透传不受影响。Create / BatchCreate / Update /
+// UpdateFields 四个写出口全部覆盖。
+func TestGormRepository_DuplicateKeySentinel(t *testing.T) {
+	db := setupUniqueDB(t)
+	repo := NewGormRepository[uniqueEmailUser, int64](db)
+	ctx := context.Background()
+
+	first := &uniqueEmailUser{Email: "dup@e.com", Name: "first"}
+	if err := repo.Create(ctx, first); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+
+	t.Run("Create", func(t *testing.T) {
+		_, err := func() (int64, error) {
+			err := repo.Create(ctx, &uniqueEmailUser{Email: "dup@e.com", Name: "second"})
+			return 0, err
+		}()
+		if err == nil || !errors.Is(err, crud.ErrDuplicateKey) {
+			t.Fatalf("Create duplicate = %v, want errors.Is crud.ErrDuplicateKey", err)
+		}
+	})
+
+	t.Run("BatchCreate", func(t *testing.T) {
+		err := repo.BatchCreate(ctx, []*uniqueEmailUser{{Email: "x@e.com"}, {Email: "dup@e.com"}}, 10)
+		if err == nil || !errors.Is(err, crud.ErrDuplicateKey) {
+			t.Fatalf("BatchCreate duplicate = %v, want errors.Is crud.ErrDuplicateKey", err)
+		}
+	})
+
+	other := &uniqueEmailUser{Email: "other@e.com"}
+	if err := repo.Create(ctx, other); err != nil {
+		t.Fatalf("seed other: %v", err)
+	}
+	otherEmail := other.Email
+	other.Email = "dup@e.com"
+
+	t.Run("Update", func(t *testing.T) {
+		if _, err := repo.Update(ctx, other); err == nil || !errors.Is(err, crud.ErrDuplicateKey) {
+			t.Fatalf("Update duplicate = %v, want errors.Is crud.ErrDuplicateKey", err)
+		}
+	})
+
+	t.Run("UpdateFields", func(t *testing.T) {
+		if _, err := repo.UpdateFields(ctx, other.ID, map[string]any{"Email": "dup@e.com"}); err == nil || !errors.Is(err, crud.ErrDuplicateKey) {
+			t.Fatalf("UpdateFields duplicate = %v, want errors.Is crud.ErrDuplicateKey", err)
+		}
+		_ = otherEmail
+	})
+
+	// 对照：非唯一冲突错误不被误分型（原样透传，不带哨兵链）
+	boom := repo.Create(ctx, nil) // nil entity → 驱动层错误，非唯一冲突
+	if boom == nil {
+		t.Fatal("nil entity must error")
+	}
+	if errors.Is(boom, crud.ErrDuplicateKey) {
+		t.Fatalf("non-duplicate error must not be mapped to sentinel, got %v", boom)
+	}
+}
+
+// TestWrapUniqueViolation_KeepsDriverErrorInChain 单元（gormx#181）：双 %w
+// 包装让哨兵与原始驱动错误同链——errors.Is 命中哨兵的同时，errors.As 仍可
+// 取回原始驱动错误的类型化字段（pgconn.PgError 的码位等下游用法依赖此链）。
+type syntheticDriverErr struct{ msg string }
+
+func (e syntheticDriverErr) Error() string { return e.msg }
+
+func TestWrapUniqueViolation_KeepsDriverErrorInChain(t *testing.T) {
+	orig := syntheticDriverErr{msg: "UNIQUE constraint failed: t.email"}
+	err := wrapUniqueViolation(orig)
+	if !errors.Is(err, crud.ErrDuplicateKey) {
+		t.Fatalf("errors.Is sentinel failed, got %v", err)
+	}
+	var got syntheticDriverErr
+	if !errors.As(err, &got) || got.msg != orig.msg {
+		t.Fatalf("errors.As must reach original driver error, got %v", err)
+	}
+
+	// 非唯一冲突：原样透传（同一实例，无哨兵链）
+	plain := errors.New("connection refused")
+	if wrapUniqueViolation(plain) != plain {
+		t.Fatal("non-duplicate error must pass through unchanged")
+	}
+	if wrapUniqueViolation(nil) != nil {
+		t.Fatal("nil must pass through")
+	}
+}
