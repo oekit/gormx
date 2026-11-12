@@ -480,7 +480,8 @@ func TestGormRepository_CountExists_IgnorePaging(t *testing.T) {
 	}
 }
 
-// customPK 主键列名非 "id"，用于验证 UpdateFields 的主键解析。
+// customPK 主键列名非 "id"，用于验证 UpdateFields / GetByIDForUpdate 的
+// 主键解析。
 type customPK struct {
 	UID  int64  `gorm:"primaryKey;column:uid;autoIncrement"`
 	Name string `gorm:"size:50"`
@@ -514,6 +515,56 @@ func TestGormRepository_UpdateFields_NonIDPrimaryKey(t *testing.T) {
 	}
 	if got.Name != "after" {
 		t.Errorf("expected name after, got %s", got.Name)
+	}
+}
+
+// TestGormRepository_GetByIDForUpdate_NonIDPrimaryKey 回归（#194）：
+// GetByIDForUpdate 此前硬编码 Where("id", ...)，主键列名非 id 的实体上直接
+// no such column: id——且它是 BaseService.Update 事务路径（crud/service.go
+// 行锁读）的唯一入口，上层调用方无法绕过（同文件 UpdateFields 的同款缺陷
+// 已作为回归 bug 修过一次，本条是该缺陷类的最后一个硬编码点）。
+func TestGormRepository_GetByIDForUpdate_NonIDPrimaryKey(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err = db.AutoMigrate(&customPK{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	repo := NewGormRepository[customPK, int64](db)
+	ctx := context.Background()
+
+	e := &customPK{Name: "before"}
+	if err = repo.Create(ctx, e); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// 行锁读：主键列名 uid（非 id）经 schema 解析 + 当前方言引用
+	got, err := repo.GetByIDForUpdate(ctx, e.UID)
+	if err != nil {
+		t.Fatalf("GetByIDForUpdate: %v", err)
+	}
+	if got.Name != "before" {
+		t.Errorf("Name = %q, want before", got.Name)
+	}
+	// 未命中路径：仍走 ErrNotFound（不是 no such column 的 SQL 错）
+	if _, gerr := repo.GetByIDForUpdate(ctx, 999999); !errors.Is(gerr, crud.ErrNotFound) {
+		t.Errorf("miss want ErrNotFound chain, got %v", gerr)
+	}
+
+	// BaseService.Update 事务路径（内部硬调 GetByIDForUpdate）同样必须可用
+	svc := crud.NewBaseService[customPK, int64, map[string]any, map[string]any](repo).
+		SetToEntity(func(r *map[string]any) *customPK {
+			return &customPK{Name: (*r)["name"].(string)}
+		}).
+		SetUpdateEntity(func(e *customPK, r *map[string]any) { e.Name = (*r)["name"].(string) })
+	updReq := map[string]any{"name": "after-tx"}
+	updated, err := svc.Update(ctx, e.UID, &updReq)
+	if err != nil {
+		t.Fatalf("BaseService.Update（事务路径）: %v", err)
+	}
+	if updated.Name != "after-tx" {
+		t.Errorf("updated Name = %q, want after-tx", updated.Name)
 	}
 }
 

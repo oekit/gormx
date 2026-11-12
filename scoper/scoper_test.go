@@ -139,8 +139,11 @@ func TestRule_NoBuiltinOwnerOnly(t *testing.T) {
 	}
 }
 
-// TestRule_FailClosedOnMisconfig 规则缺失时两面 fail-closed：
-// SQL 面恒假 1=0（放行 0 行），内存面恒 false。
+// TestRule_FailClosedOnMisconfig 规则配置不完整时两面 fail-closed：
+// SQL 面恒假 1=0（放行 0 行），内存面恒 false。#195 起 builtin 侧误配
+// （column 空 / match nil）纳入完整性判定，与 owner 侧同口径——此前
+// match nil 在内存面 nil func call 直接 panic、column 空在 SQL 面拼出
+// 非法 SQL（500），都不是声明的 fail-closed 形态。
 func TestRule_FailClosedOnMisconfig(t *testing.T) {
 	db := newScoperDB(t)
 	seedScopeRows(t, db)
@@ -149,14 +152,23 @@ func TestRule_FailClosedOnMisconfig(t *testing.T) {
 		"nil 规则":        nil,
 		"空 ownerColumn": NewRule[scopedTask]("", func(t scopedTask) int64 { return t.UID }),
 		"nil ownerOf":   NewRule[scopedTask]("uid", nil),
+		"builtin 空 column": NewRule[scopedTask]("uid", func(t scopedTask) int64 { return t.UID },
+			WithBuiltinRows("", true, func(t scopedTask) bool { return t.Builtin })),
+		"builtin nil match": NewRule[scopedTask]("uid", func(t scopedTask) int64 { return t.UID },
+			WithBuiltinRows[scopedTask]("is_builtin", true, nil)),
 	} {
 		var n int64
 		db.Model(&scopedTask{}).Scopes(rule.Scope(Subject{UID: 7})).Count(&n)
 		if n != 0 {
 			t.Errorf("%s: SQL 面应恒假（0 行）, got %d —— fail-open 不可接受", name, n)
 		}
-		if rule.Allows(scopedTask{UID: 7}, Subject{UID: 7}) {
-			t.Errorf("%s: 内存面应恒 false", name)
+		// 本人行：规则整体不完整时 owner 匹配也必须被挡（fail-closed）
+		if allowsNoPanic(t, name, rule, scopedTask{UID: 7}, Subject{UID: 7}) {
+			t.Errorf("%s: 内存面（本人行）应恒 false", name)
+		}
+		// 非本人行：走 builtin 分支——nil match 不得 panic（#195 缺陷形态）
+		if allowsNoPanic(t, name, rule, scopedTask{UID: 99}, Subject{UID: 7}) {
+			t.Errorf("%s: 内存面（非本人行）应恒 false", name)
 		}
 	}
 	// admin 旁路在规则缺失时仍然成立（旁路不依赖规则完整性）
@@ -165,6 +177,19 @@ func TestRule_FailClosedOnMisconfig(t *testing.T) {
 	if n != 4 {
 		t.Errorf("admin 应全量 4 行, got %d", n)
 	}
+}
+
+// allowsNoPanic 包一层 recover：#195 的缺陷形态之一是 builtin match=nil 在
+// 内存面 nil func call 直接 panic——测试面把它转成清晰的失败信息而非整包
+// 崩溃（修复后 valid() 拦截，不会走到 match 调用）。
+func allowsNoPanic(t *testing.T, name string, rule *Rule[scopedTask], row scopedTask, sub Subject) (got bool) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("%s: Allows panic（#195：builtin 误配不得在内存面 nil func call）: %v", name, r)
+		}
+	}()
+	return rule.Allows(row, sub)
 }
 
 // TestRule_ScopeSQLShape SQL 形态锚定：owner 条件 + 内置行 OR 分支、

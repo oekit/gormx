@@ -553,3 +553,35 @@ func TestQuery_Page_NormalizesAtEntry(t *testing.T) {
 		})
 	}
 }
+
+// TestQuerySpec_Omit_IdentifierFailClosed（#196）：Omit 是 #154 标识符白名单
+// 收口漏掉的唯一列名入口——非法/拼错的排除列名此前零信号静默失效（Err()
+// nil、Strict 不 panic、拼错列仍被读出/写穿），与 Select/Order/GroupBy/
+// Preload 的 fail-closed 口径相反。白名单外的值必须丢弃 + Err() 累计，
+// 合法字段原样透传（向后兼容）。
+func TestQuerySpec_Omit_IdentifierFailClosed(t *testing.T) {
+	for _, field := range []string{"id; DROP TABLE users; --", "password, secret", "a-b", "`key`", ""} {
+		q := NewQuery().Omit(field)
+		if got := q.Spec().Omits; len(got) != 0 {
+			t.Errorf("Omit(%q) 应丢弃, spec.Omits = %v", field, got)
+		}
+		if q.Err() == nil {
+			t.Errorf("Omit(%q) 应计入 Err() 信号面（#135 口径）", field)
+		}
+	}
+	// 合法字段（含变参多字段）原样透传
+	q := NewQuery().Omit("password", "secret_col", "t.internal")
+	if err := q.Err(); err != nil {
+		t.Fatalf("合法 Omit 不应计入 Err(): %v", err)
+	}
+	if got := q.Spec().Omits; len(got) != 3 {
+		t.Errorf("合法 Omit 应保留, spec.Omits = %v", got)
+	}
+	// Strict 当场 panic（与 Where/Select 等同口径）
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("Strict 模式下非法 Omit 应 panic（#135 口径）")
+		}
+	}()
+	NewQuery().Strict().Omit("bad-field!")
+}

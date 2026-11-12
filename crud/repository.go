@@ -78,7 +78,9 @@ type TxRepository[T any, ID comparable] interface {
 	// GetByIDForUpdate 按 ID 行锁读取（SELECT ... FOR UPDATE）。
 	// 必须在 RunInTx 的事务内调用；不支持锁语法的后端可退化为
 	// 普通读（如 sqlite 单写者模型下事务天然串行）。
-	// 查询经中性 Query 构建器表达，主键列名为 "id"。
+	// 查询经中性 Query 构建器表达；主键列名由实现经自身 schema 解析，
+	// 不硬编码 "id"（gormrepo 已按此实现，#194——此前本行声明「主键列名
+	// 为 "id"」，把限制经 BaseService.Update 传导给上层且不可绕过）。
 	GetByIDForUpdate(ctx context.Context, id ID) (*T, error)
 }
 

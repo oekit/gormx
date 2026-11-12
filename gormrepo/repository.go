@@ -23,6 +23,7 @@
 package gormrepo
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -84,14 +85,41 @@ func (r *GormRepository[T, ID]) RunInTx(ctx context.Context, fn func(repo crud.R
 // sqlite 方言跳过 FOR UPDATE 子句：dialector 不支持该语法会直接报
 // 语法错误，且 sqlite 单写者模型下事务天然串行，锁无增量价值。
 // 经 GetOne 走查询装饰器（行锁读同样自动注入 scope）。
-// 注意：经中性 Query 表达，主键列名为 "id"（自定义主键列名的实体请以
-// GetOne + 显式条件替代）。
+// 主键条件经 GORM schema 解析主键列名（不要求主键列名为 "id"，与
+// GetByID/UpdateFields/Delete 同一承诺，#194）：列名按当前方言引用后走
+// WhereRaw 占位符参数化（Where 对保留字列名建议的同一路径），文本主键值
+// 同样不会被误解析为 SQL 片段。此前硬编码 Where("id", ...)——主键列名非
+// id 的实体在此直接 no such column，且它是 BaseService.Update 事务路径
+// （crud/service.go 行锁读）的唯一入口，上层调用方无法绕过。
 func (r *GormRepository[T, ID]) GetByIDForUpdate(ctx context.Context, id ID) (*T, error) {
-	q := crud.NewQuery().Where("id", "=", id)
+	pk, err := r.primaryKeyColumn()
+	if err != nil {
+		return nil, err
+	}
+	var quote bytes.Buffer
+	r.db.QuoteTo(&quote, pk)
+	q := crud.NewQuery().WhereRaw(quote.String()+" = ?", id)
 	if r.db.Name() != "sqlite" {
 		q = q.ForUpdate()
 	}
 	return r.GetOne(ctx, q)
+}
+
+// primaryKeyColumn 解析模型主键列名（GORM schema 解析，同根包
+// SingletonRepo.primaryKeyColumn 的做法）：clause.PrimaryColumn 由 GORM 在
+// 语句构建期解析，中性 Query 拿不到该结果，此处显式 Parse（GORM 内部按
+// DB 缓存 schema，重复 Parse 是缓存命中）。
+func (r *GormRepository[T, ID]) primaryKeyColumn() (string, error) {
+	var model T
+	stmt := &gorm.Statement{DB: r.db}
+	if err := stmt.Parse(model); err != nil {
+		return "", fmt.Errorf("gormrepo: parse model schema: %w", err)
+	}
+	field := stmt.Schema.PrioritizedPrimaryField
+	if field == nil || field.DBName == "" {
+		return "", fmt.Errorf("gormrepo: model %T has no primary key column", model)
+	}
+	return field.DBName, nil
 }
 
 // GetByID 根据 ID 获取记录。
