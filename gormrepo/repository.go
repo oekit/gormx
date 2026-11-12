@@ -59,16 +59,36 @@ func NewGormRepository[T any, ID comparable](db *gorm.DB, opts ...RepositoryOpti
 
 // Create 创建记录。
 // 不套查询装饰器（插入路径的身份注入属于 model hook，见 GORM BeforeCreate）。
+// 唯一键冲突统一映射为 crud.ErrDuplicateKey 哨兵（gormx#181，见 wrapUniqueViolation）。
 func (r *GormRepository[T, ID]) Create(ctx context.Context, entity *T) error {
-	return r.db.WithContext(ctx).Create(entity).Error
+	return wrapUniqueViolation(r.db.WithContext(ctx).Create(entity).Error)
 }
 
 // BatchCreate 批量创建记录。同 Create 不套查询装饰器。
+// 唯一键冲突统一映射为 crud.ErrDuplicateKey 哨兵（gormx#181）。
 func (r *GormRepository[T, ID]) BatchCreate(ctx context.Context, entities []*T, batchSize int) error {
 	if batchSize <= 0 {
 		batchSize = 100
 	}
-	return r.db.WithContext(ctx).CreateInBatches(entities, batchSize).Error
+	return wrapUniqueViolation(r.db.WithContext(ctx).CreateInBatches(entities, batchSize).Error)
+}
+
+// wrapUniqueViolation 把唯一键冲突的驱动原始错误统一映射到
+// [crud.ErrDuplicateKey] 哨兵（gormx#181）：判据单源 gormx.IsUniqueViolation
+// （gorm.ErrDuplicatedKey / mysql 1062 / pg SQLSTATE 23505 / sqlite UNIQUE
+// constraint），驱动文案匹配收敛回本包单点——消费方在 WithErrMapper / 出口
+// 分型一律 errors.Is(err, crud.ErrDuplicateKey)，不再各自子串匹配。双 %w
+// 包装（Go 1.20 multi-error wrap）让哨兵与原始驱动错误同链：errors.Is 命中
+// 哨兵，errors.As 仍可取到原始驱动错误的类型化字段（如 pgconn.PgError 的
+// 码位/约束名），文案与码位不丢。
+func wrapUniqueViolation(err error) error {
+	if err == nil {
+		return nil
+	}
+	if gormx.IsUniqueViolation(err) {
+		return fmt.Errorf("%w: %w", crud.ErrDuplicateKey, err)
+	}
+	return err
 }
 
 // RunInTx 在事务中执行 fn（TxRepository 能力）。
@@ -221,7 +241,7 @@ func (r *GormRepository[T, ID]) Update(ctx context.Context, entity *T, opts ...c
 		sel = db.Model(entity).Select(cols)
 	}
 	res := sel.Updates(entity)
-	return res.RowsAffected, res.Error
+	return res.RowsAffected, wrapUniqueViolation(res.Error)
 }
 
 // lastUpdateColumns 取 opts 中最后一个非空 Columns（UpdateOption 文档约定）。
@@ -248,7 +268,7 @@ func (r *GormRepository[T, ID]) UpdateFields(ctx context.Context, id ID, fields 
 	res := db.Model(&entity).
 		Where(clause.Eq{Column: clause.PrimaryColumn, Value: id}).
 		Updates(fields)
-	return res.RowsAffected, res.Error
+	return res.RowsAffected, wrapUniqueViolation(res.Error)
 }
 
 // Delete 根据 ID 删除记录，回传受影响行数（0 = 记录不存在）。

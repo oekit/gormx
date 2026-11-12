@@ -18,6 +18,15 @@ import (
 // WithNotFoundErr 替换为消费方码表/哨兵形态（如 40401、gorm.ErrRecordNotFound）。
 var ErrNotFound = errors.New("resource not found")
 
+// ErrDuplicateKey 是唯一键冲突的哨兵错误（gormx#181）：mysql 1062 /
+// pg SQLSTATE 23505 / sqlite UNIQUE constraint 等驱动方言的原始错误由实现层
+// （gormrepo）经 gormx.IsUniqueViolation 命中后以 %w 包装上抛——消费方统一
+// errors.Is(err, ErrDuplicateKey) 分型，不再退化到驱动文案子串匹配（文案
+// 判定是系统性技术债，见 sqlite_busy.go 与 #160 的 duplicate 误分型事故面）。
+// errors.As 对原始驱动错误（如 pgconn.PgError）依然可达：%w 包装保留完整
+// 错误链，原始错误的类型化字段不受影响。
+var ErrDuplicateKey = errors.New("duplicate key")
+
 // ErrMapperFunc 是 Service 对外错误的映射钩子（同 middleware.SetStatusMapper 哲学）。
 // 入参 err 为 crud 按默认规则处理后即将返回的错误：not-found 场景是
 // BizCode=404 的 BizError（errors.Is(err, ErrNotFound) 成立），duplicate 等

@@ -124,3 +124,17 @@ func TestSingletonRepo_IdColumnModel_StillWorks(t *testing.T) {
 		t.Errorf("expected ID %d, got %d", created.ID, got.ID)
 	}
 }
+
+// TestNewSingletonRepo_NilDefaultValPanics 回归（gormx#182）：defaultVal 为
+// nil 构造期即 panic（fail-fast，与仓内构造期校验纪律一致）——旧实现构造
+// 成功，故障推迟到「线上空表首次 Get/GetOrCreate」才以 nil func deref panic
+// 爆出，数据依赖的延迟故障出事点与根因点距离最远。
+func TestNewSingletonRepo_NilDefaultValPanics(t *testing.T) {
+	db := newTestDB(t, &singletonCfgPK{})
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("nil defaultVal must panic at construction (gormx#182)")
+		}
+	}()
+	_ = NewSingletonRepo[*singletonCfgPK](db, nil)
+}

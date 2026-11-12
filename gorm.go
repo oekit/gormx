@@ -116,7 +116,7 @@ func Open(dialector gorm.Dialector, opts ...OpenOption) (*gorm.DB, error) {
 
 	db, err := gorm.Open(dialector, &gormCfg)
 	if err != nil {
-		gormLog.Error("failed opening connection to db", "err", err)
+		gormLog.Error("failed opening connection to db", logx.ErrKey, err)
 		return nil, err
 	}
 
