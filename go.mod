@@ -36,6 +36,6 @@ require (
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
-	github.com/oekit/pkg v0.47.1
+	github.com/oekit/pkg v0.48.0
 	golang.org/x/text v0.34.0 // indirect
 )
