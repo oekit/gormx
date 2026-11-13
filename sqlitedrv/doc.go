@@ -15,7 +15,7 @@
 //  2. **构建成本摊给所有人**：glebarez 的传递依赖（`modernc.org/sqlite` →
 //     `modernc.org/libc`）体量大，实测只用 MySQL 的消费方也付冷构建 +5s。
 //
-// v0.8.0 起 `OpenPureGoSQLite` 迁入本子包（⚠️ breaking：核心包不再导出该入口，
+// v0.8.0 起 `OpenPureGoSQLite` 迁入本子包（⚠️ breaking：核心包不再导出该入口；v0.12.0 起该旧名删除，统一 `Open`，
 // 迁移＝改 import 为 `github.com/oekit/gormx/sqlitedrv`，调用改为
 // `sqlitedrv.OpenPureGoSQLite`，签名不变）。此后**核心包（`./`、`crud/`、
 // `gormrepo/`）零 sqlite 链接**：不 import 本子包的二进制既不注册任何驱动，

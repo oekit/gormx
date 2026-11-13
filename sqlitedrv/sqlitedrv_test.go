@@ -45,24 +45,6 @@ func TestOpen_EmptyDSN(t *testing.T) {
 	}
 }
 
-// TestOpenPureGoSQLite_Alias 迁移别名与 Open 同行为（旧 gormx.OpenPureGoSQLite
-// 调用点只改 import 路径即可迁移）。
-func TestOpenPureGoSQLite_Alias(t *testing.T) {
-	dsn := "file:" + uuid.New().String() + "?mode=memory&cache=shared"
-	db, err := sqlitedrv.OpenPureGoSQLite(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if sqlDB, derr := db.DB(); derr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-	if err := db.AutoMigrate(&acct{}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // TestIsUniqueViolation_ThroughEntry 入口与判据同源的端到端验证：
 // 经本入口打开的库撞唯一键，gormx.IsUniqueViolation 必须判得出
 // （判据按纯 Go 驱动文案匹配，见 transaction.go）。

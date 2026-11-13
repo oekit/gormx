@@ -46,11 +46,3 @@ func Open(dsn string, opts ...gormx.OpenOption) (*gorm.DB, error) {
 	}
 	return gormx.Open(sqlite.Open(dsn), opts...)
 }
-
-// OpenPureGoSQLite 是 Open 的迁移别名：旧 gormx.OpenPureGoSQLite（根包入口，
-// #72 起移除）的同名接替者，迁移期可只改 import 路径。
-//
-// Deprecated: 用 Open。
-func OpenPureGoSQLite(dsn string, opts ...gormx.OpenOption) (*gorm.DB, error) {
-	return Open(dsn, opts...)
-}
