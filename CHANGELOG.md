@@ -1,5 +1,9 @@
 
 
+## [v0.12.0] — 2026-11-13
+
+- **BREAKING**：删除 sqlitedrv.OpenPureGoSQLite 迁移别名（#72 迁移期旧名接替者退役）。下游迁移：sqlitedrv.OpenPureGoSQLite(dsn) → sqlitedrv.Open(dsn)（签名不变，纯改名）。地板随迁 pkg v0.48.0 / logx v0.11.0。
+
 ## [v0.11.15] — 2026-11-13
 
 - 9 单修复批：GetByIDForUpdate 主键 QuoteTo 参数化（#194）、scoper fail-closed（#195）、Omit 白名单收口（#196）等；地板对齐 pkg v0.47.0。
