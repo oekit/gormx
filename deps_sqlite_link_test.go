@@ -19,7 +19,7 @@ import (
 //
 // 缘由（oekit/gormx#72）：glebarez 系与 modernc.org/sqlite 都在 init() 里
 // sql.Register("sqlite", ...) ⇒ 同一二进制链接两者启动即
-// panic: sql: Register called twice for driver "sqlite"。入口 OpenPureGoSQLite
+// panic: sql: Register called twice for driver "sqlite"。入口 Open（旧名 OpenPureGoSQLite 已删）
 // 曾住根包 ⇒ 只要用 gormx（哪怕只用 MySQL）就带上 glebarez 的注册副作用，
 // 与任何直接用 modernc.org/sqlite 的库组合即炸（消费方实证 code-review-service）。
 //
