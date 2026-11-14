@@ -61,7 +61,7 @@ func applySpec(db *gorm.DB, spec crud.QuerySpec, opts applyOptions) *gorm.DB {
 	// ILIKE（裸拼直接语法错）。此处是唯一知道方言的消费点：MySQL 下改写为
 	// LOWER(field) LIKE LOWER(?)（语义等价的大小写不敏感匹配，占位符参数
 	// 原样保留）。SQLite/PG 及未知方言原样透传。
-	mysql := db != nil && db.Dialector != nil && db.Dialector.Name() == "mysql"
+	mysql := db != nil && db.Dialector != nil && db.Name() == "mysql"
 	applyConds := func(conds []crud.Condition, or bool) {
 		for _, c := range conds {
 			q := c.Query
