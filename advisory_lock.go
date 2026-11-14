@@ -72,9 +72,20 @@ func RunWithAdvisoryLock(ctx context.Context, db *gorm.DB, key int64, fn func(tx
 	}
 
 	return db.Connection(func(conn *gorm.DB) error {
-		// 拿锁——本连接内阻塞；ctx 取消中断（未拿到的路径无锁可解）
-		if err := conn.WithContext(ctx).Exec(lockSQL, key).Error; err != nil {
-			return fmt.Errorf("gormx: advisory lock acquire (key=%d): %w", key, err)
+		// 拿锁——本连接内阻塞；ctx 取消中断阻塞并返回 ctx 错误
+		aerr := conn.WithContext(ctx).Exec(lockSQL, key).Error
+		if aerr != nil {
+			if ctx.Err() != nil {
+				// #232：取消中断时服务端可能**已授锁**（客户端取消不等服务端
+				// 应答，会话锁可能已被本连接持有）——此前按「未拿到」直接返回
+				// 不解锁，锁泄漏到连接关闭。尽力解锁一次：未持有则无害报错、
+				// 已持有则释放；失败不掩盖原始 ctx 错误。
+				if uerr := conn.WithContext(context.Background()).Exec(unlockSQL, key).Error; uerr != nil {
+					gormLog.Warn("advisory lock: ctx 取消后的解锁尝试失败（若服务端已授锁，锁将泄漏到持锁连接关闭）",
+						"key", key, logx.ErrKey, uerr)
+				}
+			}
+			return fmt.Errorf("gormx: advisory lock acquire (key=%d): %w", key, aerr)
 		}
 		defer func() {
 			// 解锁——同一条连接（本原语的存在理由）；收尾路径用

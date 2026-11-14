@@ -22,6 +22,12 @@ type openConfig struct {
 	connIdleTime    time.Duration
 	configurePool   bool
 	maxOpenConnsSet bool // WithConnectionPool 显式设置过 MaxOpenConns（#97）
+	// #229：逐项 set 标记——此前只传 WithConnMaxIdleTime 也把 configurePool
+	// 置真，池配置块用「未设置过的 0」调 SetMaxIdleConns(0)（database/sql
+	// 语义 = 不保留任何空闲连接），想清的 stale 连接根本不存在。
+	maxIdleConnsSet bool
+	connLifetimeSet bool
+	connIdleTimeSet bool
 	logger          gormLogger.Interface
 }
 
@@ -54,6 +60,8 @@ func WithConnectionPool(maxOpenConns, maxIdleConns int, connMaxLifetime time.Dur
 		c.connLifetime = connMaxLifetime
 		c.configurePool = true
 		c.maxOpenConnsSet = true
+		c.maxIdleConnsSet = true
+		c.connLifetimeSet = true
 	}
 }
 
@@ -62,6 +70,7 @@ func WithConnectionPool(maxOpenConns, maxIdleConns int, connMaxLifetime time.Dur
 func WithConnMaxIdleTime(d time.Duration) OpenOption {
 	return func(c *openConfig) {
 		c.connIdleTime = d
+		c.connIdleTimeSet = true
 		c.configurePool = true
 	}
 }
@@ -125,10 +134,19 @@ func Open(dialector gorm.Dialector, opts ...OpenOption) (*gorm.DB, error) {
 		if err != nil {
 			return nil, err
 		}
-		sqlDB.SetMaxIdleConns(cfg.maxIdleConns)
-		sqlDB.SetMaxOpenConns(cfg.maxOpenConns)
-		sqlDB.SetConnMaxLifetime(cfg.connLifetime)
-		if cfg.connIdleTime > 0 {
+		// #229：逐项按 set 标记——只传单项 option（如 WithConnMaxIdleTime）
+		// 时，未设置的项不再用「零值」下发。database/sql 缺省 MaxIdleConns=2
+		// 被 SetMaxIdleConns(0) 覆盖成「不保留任何空闲连接」是本缺口的事故面。
+		if cfg.maxOpenConnsSet {
+			sqlDB.SetMaxOpenConns(cfg.maxOpenConns)
+		}
+		if cfg.maxIdleConnsSet {
+			sqlDB.SetMaxIdleConns(cfg.maxIdleConns)
+		}
+		if cfg.connLifetimeSet {
+			sqlDB.SetConnMaxLifetime(cfg.connLifetime)
+		}
+		if cfg.connIdleTimeSet && cfg.connIdleTime > 0 {
 			sqlDB.SetConnMaxIdleTime(cfg.connIdleTime)
 		}
 	}

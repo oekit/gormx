@@ -32,7 +32,10 @@ func TestSplitStatements(t *testing.T) {
 		{"空语句丢弃", ";\n;\nCREATE TABLE a (id INT);\n", 1, []string{"CREATE TABLE"}},
 	}
 	for _, c := range cases {
-		got := SplitStatements(c.in)
+		got, serr := SplitStatements(c.in)
+		if serr != nil {
+			t.Fatalf("SplitStatements: %v", serr)
+		}
 		if len(got) != c.wantN {
 			t.Fatalf("%s: SplitStatements() got %d stmts, want %d: %#v", c.name, len(got), c.wantN, got)
 		}
@@ -311,7 +314,10 @@ func TestRunDelimiterScriptWarnsRootCause(t *testing.T) {
 // 不是隐性契约；将来若实现状态机，本用例应同步改写。
 func TestSplitStatementsDelimiterNoStateMachine(t *testing.T) {
 	script := "DELIMITER $$\nCREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END$$\nDELIMITER ;\n"
-	got := SplitStatements(script)
+	got, serr := SplitStatements(script)
+	if serr != nil {
+		t.Fatalf("SplitStatements: %v", serr)
+	}
 	if len(got) < 3 {
 		t.Fatalf("无状态机时过程体应被分号切碎（当前声明行为）, got %#v", got)
 	}
