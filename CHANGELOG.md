@@ -1,5 +1,9 @@
 
 
+## [v0.12.1] — 2026-11-14
+
+- fix: 审计批报 7 单——池配置逐项 set(#229)/SplitStatements 未闭合块注释 fail-closed(#230,**BREAKING:签名 +error**)/IntSoftDelete.Scan fail-closed(#231)/advisory lock 取消路径尽力解锁(#232)/分页溢出回显一致(#233)/ILIKE 方言分派 MySQL 改写 LOWER(#234)/AuditPlugin 全整数家族(#235)
+
 ## [v0.12.0] — 2026-11-13
 
 - **BREAKING**：删除 sqlitedrv.OpenPureGoSQLite 迁移别名（#72 迁移期旧名接替者退役）。下游迁移：sqlitedrv.OpenPureGoSQLite(dsn) → sqlitedrv.Open(dsn)（签名不变，纯改名）。地板随迁 pkg v0.48.0 / logx v0.11.0。
