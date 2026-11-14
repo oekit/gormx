@@ -69,10 +69,18 @@ func Paginate[T any](db *gorm.DB, req *pagination.PageRequest, queryFn func(db *
 		pages = int(math.Ceil(float64(total) / float64(pageSize)))
 	}
 
+	// #233：溢出回退的回显一致性——Offset() 对溢出页码回退第一页（pkg
+	// Policy.Offset 乘法前判），但此前回显仍自称超大页码：信封说 page=999999
+	// 而内容是第一页。回显落回**实际服务的页**。
+	servedPage := page
+	if page > 1 && pageSize > 0 && page-1 > math.MaxInt/pageSize {
+		servedPage = 1
+	}
+
 	return &PageResponse[T]{
 		Items:    items,
 		Total:    total,
-		Page:     page,
+		Page:     servedPage,
 		PageSize: pageSize,
 		Pages:    pages,
 	}, nil

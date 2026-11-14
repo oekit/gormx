@@ -1,6 +1,7 @@
 package gormx
 
 import (
+	"fmt"
 	"reflect"
 
 	"gorm.io/gorm"
@@ -48,16 +49,20 @@ func (d *IntSoftDelete) Scan(value any) error {
 	case int:
 		*d = IntSoftDelete(v)
 	case []byte:
-		*d = IntSoftDelete(0)
+		// #231：fail-closed——非法字节此前静默置 Alive（已删行被读成未删），
+		// 现在报错让上层连接池/查询路径显式失败。
+		acc := int64(0)
 		for _, b := range v {
 			if b < '0' || b > '9' {
-				*d = IntSoftDeleteAlive
-				break
+				return fmt.Errorf("gormx: IntSoftDelete.Scan 非法字节 0x%02x（仅接受十进制数字串）", b)
 			}
-			*d = *d*10 + IntSoftDelete(b-'0')
+			acc = acc*10 + int64(b-'0')
 		}
+		*d = IntSoftDelete(acc)
 	default:
-		*d = IntSoftDeleteAlive
+		// #231：未知驱动类型 fail-closed（此前静默 Alive——把「读不懂」
+		// 当「未删」是数据暴露方向的假阴性）
+		return fmt.Errorf("gormx: IntSoftDelete.Scan 不支持的驱动类型 %T", value)
 	}
 	return nil
 }

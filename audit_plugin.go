@@ -108,13 +108,26 @@ func setField(tx *gorm.DB, fieldName string, value int64) {
 	}
 }
 
-// setStructInt64Field 设置结构体上指定 int64 字段的值（字段不存在或不可设置时跳过）。
+// setStructInt64Field 设置结构体上审计字段的值（字段不存在或不可设置时跳过）。
+// #235：此前只认 Kind()==Int64——审计列声明为 int/uint 家族（UserID int 之类）
+// 时静默恒 0。全家族覆盖；超字段范围跳过不写（Overflow 检查避免 SetInt panic）。
 func setStructInt64Field(rv reflect.Value, fieldName string, value int64) {
 	fv := rv.FieldByName(fieldName)
 	if !fv.IsValid() || !fv.CanSet() {
 		return
 	}
-	if fv.Kind() == reflect.Int64 {
+	switch fv.Kind() {
+	case reflect.Int64:
 		fv.SetInt(value)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32:
+		if fv.OverflowInt(value) {
+			return
+		}
+		fv.SetInt(value)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if value < 0 || fv.OverflowUint(uint64(value)) {
+			return
+		}
+		fv.SetUint(uint64(value))
 	}
 }

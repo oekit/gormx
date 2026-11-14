@@ -44,7 +44,6 @@ func TestIntSoftDeleteScan(t *testing.T) {
 		{int(0), IntSoftDeleteAlive},
 		{[]byte("1"), IntSoftDeleteRemoved},
 		{[]byte("0"), IntSoftDeleteAlive},
-		{[]byte("xx"), IntSoftDeleteAlive},
 	}
 	for _, c := range cases {
 		var d IntSoftDelete
@@ -54,6 +53,18 @@ func TestIntSoftDeleteScan(t *testing.T) {
 		if d != c.want {
 			t.Fatalf("Scan(%v) = %v, want %v", c.in, d, c.want)
 		}
+	}
+}
+
+// #231：非法 []byte / 未知驱动类型 fail-closed——此前静默置 Alive，
+// 「已删行被读成未删」是数据暴露方向的假阴性。
+func TestIntSoftDeleteScanFailClosed(t *testing.T) {
+	var d IntSoftDelete
+	if err := d.Scan([]byte("xx")); err == nil {
+		t.Fatal("非法字节应报错(fail-closed),此前静默置 Alive")
+	}
+	if err := d.Scan(3.14); err == nil {
+		t.Fatal("未知驱动类型应报错(fail-closed)")
 	}
 }
 

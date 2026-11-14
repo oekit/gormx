@@ -4,6 +4,7 @@ import (
 	"github.com/oekit/gormx/crud"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"strings"
 )
 
 // compile-time:确保本包实现 crud 仓储接口与事务能力接口。
@@ -39,19 +40,43 @@ func countStatement(db *gorm.DB, q *crud.Query, keepGroup bool) *gorm.DB {
 	return applySpec(db, q.Spec(), applyOptions{forCount: true, keepGroup: keepGroup})
 }
 
+// rewriteILikeMySQL 把 ILIKE 谓词改写为 MySQL 等价形态（#234）：
+// `<field> ILIKE ?` → `LOWER(<field>) LIKE LOWER(?)`。大小写不敏感语义
+// 等价；值仍走占位符参数化（LOWER 包住占位符，绑定值原样传入）。片段由
+// crud 白名单生成、形态固定为单谓词 `<field> ILIKE ?`，无 ILIKE 时原样返回。
+func rewriteILikeMySQL(query string) string {
+	i := strings.Index(query, " ILIKE ")
+	if i < 0 {
+		return query
+	}
+	return "LOWER(" + strings.TrimSpace(query[:i]) + ") LIKE LOWER(?)"
+}
+
 // applySpec 按 opts 将 QuerySpec 翻译为 gorm.DB 语句。
 // AND 条件逐条 Where（等价原 gormx.FilterBuilder.Apply 语义），
 // OR 条件走 gorm Or()，值全部占位符参数化（片段由根包白名单生成）。
 func applySpec(db *gorm.DB, spec crud.QuerySpec, opts applyOptions) *gorm.DB {
-	// 应用 AND 条件
-	for _, c := range spec.Conds {
-		db = db.Where(c.Query, c.Args...)
+	// #234：ILIKE 方言分派——crud.Query 是存储后端无关的构建器，ILIKE 在
+	// 白名单里按中性片段渲染；PostgreSQL/SQLite 原生支持，MySQL 没有
+	// ILIKE（裸拼直接语法错）。此处是唯一知道方言的消费点：MySQL 下改写为
+	// LOWER(field) LIKE LOWER(?)（语义等价的大小写不敏感匹配，占位符参数
+	// 原样保留）。SQLite/PG 及未知方言原样透传。
+	mysql := db != nil && db.Dialector != nil && db.Dialector.Name() == "mysql"
+	applyConds := func(conds []crud.Condition, or bool) {
+		for _, c := range conds {
+			q := c.Query
+			if mysql {
+				q = rewriteILikeMySQL(q)
+			}
+			if or {
+				db = db.Or(q, c.Args...)
+			} else {
+				db = db.Where(q, c.Args...)
+			}
+		}
 	}
-
-	// 应用 OR 条件
-	for _, oc := range spec.OrConds {
-		db = db.Or(oc.Query, oc.Args...)
-	}
+	applyConds(spec.Conds, false)
+	applyConds(spec.OrConds, true)
 
 	// 应用预加载
 	for _, p := range spec.Preloads {

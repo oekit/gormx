@@ -133,7 +133,10 @@ func execScript(ctx context.Context, d *gorm.DB, opts Options, script string) er
 	}
 	logx.Delegating("gormx.migrate").Info("执行数据库脚本", "script", path)
 
-	stmts := SplitStatements(string(content))
+	stmts, err := SplitStatements(string(content))
+	if err != nil {
+		return fmt.Errorf("SQL 切分失败 %s: %w", path, err)
+	}
 	warnedDelimiter := false
 	for i, stmt := range stmts {
 		// DELIMITER 指令出现 = 脚本面超出切分器能力（#104）：fail-loud 之前
@@ -477,7 +480,7 @@ func mysqlErrorNumberOne(err error) (uint16, bool) {
 //
 // ⚠️ 不支持 DELIMITER / 存储过程脚本（#104，见包文档「已知局限」）：
 // 没有 DELIMITER 状态机，过程体内的分号会被当作语句终止符逐条拆出。
-func SplitStatements(content string) []string {
+func SplitStatements(content string) ([]string, error) {
 	var statements []string
 	var code strings.Builder
 
@@ -497,14 +500,21 @@ func SplitStatements(content string) []string {
 				i++
 			}
 		case c == '/' && next == '*':
-			// 块注释：跳到 */
+			// 块注释：跳到 */；未闭合 = 脚本面不完整 ⇒ fail-closed（#230：
+			// 此前游标静默推到文件尾，剩余语句既不进 code 也不报错，
+			// 迁移报成功、schema 半成品）
 			i += 2
+			closed := false
 			for i < len(runes) {
 				if runes[i] == '*' && i+1 < len(runes) && runes[i+1] == '/' {
 					i += 2
+					closed = true
 					break
 				}
 				i++
+			}
+			if !closed {
+				return nil, fmt.Errorf("未闭合的块注释 /*(第 %d 列附近)——脚本不完整,拒绝执行", i)
 			}
 		case c == '\'' || c == '"' || c == '`':
 			// 引号内原样保留
@@ -539,5 +549,5 @@ func SplitStatements(content string) []string {
 	if strings.TrimSpace(code.String()) != "" {
 		statements = append(statements, code.String())
 	}
-	return statements
+	return statements, nil
 }
