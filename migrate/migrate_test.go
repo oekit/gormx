@@ -33,9 +33,9 @@ func TestSplitStatements(t *testing.T) {
 	}
 	for _, c := range cases {
 		got, serr := SplitStatements(c.in)
-	if serr != nil {
-		t.Fatalf("SplitStatements: %v", serr)
-	}
+		if serr != nil {
+			t.Fatalf("SplitStatements: %v", serr)
+		}
 		if len(got) != c.wantN {
 			t.Fatalf("%s: SplitStatements() got %d stmts, want %d: %#v", c.name, len(got), c.wantN, got)
 		}
