@@ -27,10 +27,9 @@
 package sqlitedrv
 
 import (
-	"fmt"
-
 	"github.com/glebarez/sqlite"
 	"github.com/oekit/gormx"
+	bizerrors "github.com/oekit/pkg/errors"
 	"gorm.io/gorm"
 )
 
@@ -42,7 +41,7 @@ import (
 // 判据本就按纯 Go 驱动的错误文案匹配 ⇒ 入口与判据同源。
 func Open(dsn string, opts ...gormx.OpenOption) (*gorm.DB, error) {
 	if dsn == "" {
-		return nil, fmt.Errorf("sqlite dsn 不能为空")
+		return nil, bizerrors.New("sqlite dsn 不能为空")
 	}
 	return gormx.Open(sqlite.Open(dsn), opts...)
 }
