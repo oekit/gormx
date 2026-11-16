@@ -29,6 +29,7 @@ import (
 	"github.com/oekit/gormx"
 	"github.com/oekit/gormx/internal/sqltext"
 	"github.com/oekit/logx"
+	bizerrors "github.com/oekit/pkg/errors"
 	"gorm.io/gorm"
 )
 
@@ -129,13 +130,13 @@ func execScript(ctx context.Context, d *gorm.DB, opts Options, script string) er
 	path := path.Join(opts.Root, opts.Target, script)
 	content, err := fs.ReadFile(opts.FS, path)
 	if err != nil {
-		return fmt.Errorf("读取 SQL 文件 %s: %w", path, err)
+		return bizerrors.Wrapf(err, "读取 SQL 文件 %s", path)
 	}
 	logx.Delegating("gormx.migrate").Info("执行数据库脚本", "script", path)
 
 	stmts, err := SplitStatements(string(content))
 	if err != nil {
-		return fmt.Errorf("SQL 切分失败 %s: %w", path, err)
+		return bizerrors.Wrapf(err, "SQL 切分失败 %s", path)
 	}
 	warnedDelimiter := false
 	for i, stmt := range stmts {
@@ -514,7 +515,7 @@ func SplitStatements(content string) ([]string, error) {
 				i++
 			}
 			if !closed {
-				return nil, fmt.Errorf("未闭合的块注释 /*(第 %d 列附近)——脚本不完整,拒绝执行", i)
+				return nil, bizerrors.Newf("未闭合的块注释 /*(第 %d 列附近)——脚本不完整,拒绝执行", i)
 			}
 		case c == '\'' || c == '"' || c == '`':
 			// 引号内原样保留

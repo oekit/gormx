@@ -31,6 +31,7 @@ import (
 
 	"github.com/oekit/gormx"
 	"github.com/oekit/gormx/crud"
+	bizerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/pkg/pagination"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -134,11 +135,11 @@ func (r *GormRepository[T, ID]) primaryKeyColumn() (string, error) {
 	var model T
 	stmt := &gorm.Statement{DB: r.db}
 	if err := stmt.Parse(model); err != nil {
-		return "", fmt.Errorf("gormrepo: parse model schema: %w", err)
+		return "", bizerrors.Wrapf(err, "gormrepo: parse model schema")
 	}
 	field := stmt.Schema.PrioritizedPrimaryField
 	if field == nil || field.DBName == "" {
-		return "", fmt.Errorf("gormrepo: model %T has no primary key column", model)
+		return "", bizerrors.Newf("gormrepo: model %T has no primary key column", model)
 	}
 	return field.DBName, nil
 }
@@ -268,18 +269,18 @@ func (r *GormRepository[T, ID]) Update(ctx context.Context, entity *T, opts ...c
 	// 纪律统一。
 	rv := reflect.Indirect(reflect.ValueOf(entity))
 	if !rv.IsValid() {
-		return 0, fmt.Errorf("gormx: Update requires a non-nil entity")
+		return 0, bizerrors.New("gormx: Update requires a non-nil entity")
 	}
 	parse := &gorm.Statement{DB: r.db}
 	if err := parse.Parse(entity); err != nil {
-		return 0, fmt.Errorf("gormx: parse update entity schema: %w", err)
+		return 0, bizerrors.Wrapf(err, "gormx: parse update entity schema")
 	}
 	field := parse.Schema.PrioritizedPrimaryField
 	if field == nil || field.DBName == "" {
-		return 0, fmt.Errorf("gormx: update entity %T has no primary key column", entity)
+		return 0, bizerrors.Newf("gormx: update entity %T has no primary key column", entity)
 	}
 	if _, isZero := field.ValueOf(ctx, rv); isZero {
-		return 0, fmt.Errorf("gormx: Update requires non-zero primary key on entity %T（零主键 + 查询装饰器会把单行更新静默放大为 scope 内全表 UPDATE，gormx#198）", entity)
+		return 0, bizerrors.Newf("gormx: Update requires non-zero primary key on entity %T（零主键 + 查询装饰器会把单行更新静默放大为 scope 内全表 UPDATE，gormx#198）", entity)
 	}
 	db, err := r.scopedDB(ctx)
 	if err != nil {

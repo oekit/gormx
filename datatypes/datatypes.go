@@ -34,8 +34,8 @@ package datatypes
 import (
 	"database/sql/driver"
 	"encoding/json"
-	"fmt"
 
+	bizerrors "github.com/oekit/pkg/errors"
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
@@ -56,7 +56,7 @@ func (s JSONSlice[T]) Value() (driver.Value, error) {
 	}
 	b, err := json.Marshal([]T(s))
 	if err != nil {
-		return nil, fmt.Errorf("datatypes.JSONSlice: marshal: %w", err)
+		return nil, bizerrors.Wrapf(err, "datatypes.JSONSlice: marshal")
 	}
 	return b, nil
 }
@@ -75,7 +75,7 @@ func (s *JSONSlice[T]) Scan(src any) error {
 	case string:
 		b = []byte(v)
 	default:
-		return fmt.Errorf("datatypes.JSONSlice: unsupported source type %T", src)
+		return bizerrors.Newf("datatypes.JSONSlice: unsupported source type %T", src)
 	}
 	if len(b) == 0 {
 		*s = nil
@@ -83,7 +83,7 @@ func (s *JSONSlice[T]) Scan(src any) error {
 	}
 	var out []T
 	if err := json.Unmarshal(b, &out); err != nil {
-		return fmt.Errorf("datatypes.JSONSlice: unmarshal %q: %w", string(b), err)
+		return bizerrors.Wrapf(err, "datatypes.JSONSlice: unmarshal %q", string(b))
 	}
 	*s = out
 	return nil
@@ -112,7 +112,7 @@ func (m JSONMap[K, V]) Value() (driver.Value, error) {
 	}
 	b, err := json.Marshal(map[K]V(m))
 	if err != nil {
-		return nil, fmt.Errorf("datatypes.JSONMap: marshal: %w", err)
+		return nil, bizerrors.Wrapf(err, "datatypes.JSONMap: marshal")
 	}
 	return b, nil
 }
@@ -130,7 +130,7 @@ func (m *JSONMap[K, V]) Scan(src any) error {
 	case string:
 		b = []byte(v)
 	default:
-		return fmt.Errorf("datatypes.JSONMap: unsupported source type %T", src)
+		return bizerrors.Newf("datatypes.JSONMap: unsupported source type %T", src)
 	}
 	if len(b) == 0 {
 		*m = nil
@@ -138,7 +138,7 @@ func (m *JSONMap[K, V]) Scan(src any) error {
 	}
 	var out map[K]V
 	if err := json.Unmarshal(b, &out); err != nil {
-		return fmt.Errorf("datatypes.JSONMap: unmarshal %q: %w", string(b), err)
+		return bizerrors.Wrapf(err, "datatypes.JSONMap: unmarshal %q", string(b))
 	}
 	*m = out
 	return nil

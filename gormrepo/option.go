@@ -2,8 +2,8 @@ package gormrepo
 
 import (
 	"context"
-	"fmt"
 
+	bizerrors "github.com/oekit/pkg/errors"
 	"gorm.io/gorm"
 )
 
@@ -58,14 +58,14 @@ func (r *GormRepository[T, ID]) scopedDB(ctx context.Context) (*gorm.DB, error) 
 	db := r.db.WithContext(ctx)
 	if r.cfg.queryDecorator == nil {
 		if r.cfg.scopeRequired {
-			return nil, fmt.Errorf("gormrepo: WithScopeRequired 要求查询装饰器，但未配置 WithQueryDecorator")
+			return nil, bizerrors.New("gormrepo: WithScopeRequired 要求查询装饰器，但未配置 WithQueryDecorator")
 		}
 		return db, nil
 	}
 	scope := r.cfg.queryDecorator(ctx)
 	if scope == nil {
 		if r.cfg.scopeRequired {
-			return nil, fmt.Errorf("gormrepo: WithScopeRequired 拒绝裸查询（decorator 返回 nil）")
+			return nil, bizerrors.New("gormrepo: WithScopeRequired 拒绝裸查询（decorator 返回 nil）")
 		}
 		return db, nil
 	}

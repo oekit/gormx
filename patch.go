@@ -2,9 +2,9 @@ package gormx
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 
+	bizerrors "github.com/oekit/pkg/errors"
 	"gorm.io/gorm"
 	gclause "gorm.io/gorm/clause"
 )
@@ -43,10 +43,10 @@ import (
 //     值未变化的命中行也计 0；需要 not-found 语义的调用方先读后判。
 func SavePatch[M any](ctx context.Context, db *gorm.DB, pk any, patch any) error {
 	if db == nil {
-		return fmt.Errorf("gormx: SavePatch requires non-nil db")
+		return bizerrors.New("gormx: SavePatch requires non-nil db")
 	}
 	if patch == nil {
-		return fmt.Errorf("gormx: SavePatch requires non-nil patch")
+		return bizerrors.New("gormx: SavePatch requires non-nil patch")
 	}
 
 	updates, err := patchUpdates[M](db, patch)
@@ -54,7 +54,7 @@ func SavePatch[M any](ctx context.Context, db *gorm.DB, pk any, patch any) error
 		return err
 	}
 	if len(updates) == 0 {
-		return fmt.Errorf("gormx: SavePatch: patch %T 未提供任何非 nil 字段（全部跳过 = 无语句可执行）", patch)
+		return bizerrors.Newf("gormx: SavePatch: patch %T 未提供任何非 nil 字段（全部跳过 = 无语句可执行）", patch)
 	}
 
 	pkColumn, err := primaryKeyColumnOf[M](db)
@@ -75,12 +75,12 @@ func patchUpdates[M any](db *gorm.DB, patch any) (map[string]any, error) {
 	v := reflect.ValueOf(patch)
 	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
-			return nil, fmt.Errorf("gormx: SavePatch: patch must not be nil pointer")
+			return nil, bizerrors.New("gormx: SavePatch: patch must not be nil pointer")
 		}
 		v = v.Elem()
 	}
 	if v.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("gormx: SavePatch: patch must be a struct or pointer to struct, got %T", patch)
+		return nil, bizerrors.Newf("gormx: SavePatch: patch must be a struct or pointer to struct, got %T", patch)
 	}
 
 	schemaFields, err := modelFields[M](db)
@@ -93,18 +93,18 @@ func patchUpdates[M any](db *gorm.DB, patch any) (map[string]any, error) {
 	for i := range t.NumField() {
 		field := t.Field(i)
 		if !field.IsExported() {
-			return nil, fmt.Errorf("gormx: SavePatch: patch 字段 %s 未导出（补丁字段必须全部导出）", field.Name)
+			return nil, bizerrors.Newf("gormx: SavePatch: patch 字段 %s 未导出（补丁字段必须全部导出）", field.Name)
 		}
 		fv := v.Field(i)
 		if fv.Kind() != reflect.Pointer {
-			return nil, fmt.Errorf("gormx: SavePatch: patch 字段 %s 必须为指针类型（nil=不触碰，非 nil=显式写入，含零值）", field.Name)
+			return nil, bizerrors.Newf("gormx: SavePatch: patch 字段 %s 必须为指针类型（nil=不触碰，非 nil=显式写入，含零值）", field.Name)
 		}
 		if fv.IsNil() {
 			continue
 		}
 		column, ok := schemaFields[field.Name]
 		if !ok {
-			return nil, fmt.Errorf("gormx: SavePatch: patch 字段 %s 在模型 %T 中无同名字段", field.Name, new(M))
+			return nil, bizerrors.Newf("gormx: SavePatch: patch 字段 %s 在模型 %T 中无同名字段", field.Name, new(M))
 		}
 		updates[column] = fv.Elem().Interface()
 	}
@@ -115,15 +115,15 @@ func patchUpdates[M any](db *gorm.DB, patch any) (map[string]any, error) {
 func primaryKeyColumnOf[M any](db *gorm.DB) (string, error) {
 	stmt := &gorm.Statement{DB: db}
 	if err := stmt.Parse(new(M)); err != nil {
-		return "", fmt.Errorf("gormx: SavePatch: parse model schema: %w", err)
+		return "", bizerrors.Wrapf(err, "gormx: SavePatch: parse model schema")
 	}
 	schema := stmt.Schema
 	if len(schema.PrimaryFields) > 1 {
-		return "", fmt.Errorf("gormx: SavePatch: 模型 %s 是复合主键（%d 列），SavePatch 不支持", schema.Name, len(schema.PrimaryFields))
+		return "", bizerrors.Newf("gormx: SavePatch: 模型 %s 是复合主键（%d 列），SavePatch 不支持", schema.Name, len(schema.PrimaryFields))
 	}
 	field := schema.PrioritizedPrimaryField
 	if field == nil || field.DBName == "" {
-		return "", fmt.Errorf("gormx: SavePatch: 模型 %s 无主键列", schema.Name)
+		return "", bizerrors.Newf("gormx: SavePatch: 模型 %s 无主键列", schema.Name)
 	}
 	return field.DBName, nil
 }
@@ -132,7 +132,7 @@ func primaryKeyColumnOf[M any](db *gorm.DB) (string, error) {
 func modelFields[M any](db *gorm.DB) (map[string]string, error) {
 	stmt := &gorm.Statement{DB: db}
 	if err := stmt.Parse(new(M)); err != nil {
-		return nil, fmt.Errorf("gormx: SavePatch: parse model schema: %w", err)
+		return nil, bizerrors.Wrapf(err, "gormx: SavePatch: parse model schema")
 	}
 	out := make(map[string]string, len(stmt.Schema.Fields))
 	for _, f := range stmt.Schema.Fields {

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"strings"
 	"testing"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/oekit/gormx"
+	bizerrors "github.com/oekit/pkg/errors"
 )
 
 // splitCases 固化 SplitStatements 的切分规则（与既有消费方 DdlService.splitStatements 同规则）。
@@ -233,7 +233,7 @@ func TestIsIgnorableError_MySQLTypedPath(t *testing.T) {
 		}
 	}
 	// 错误链穿透：gorm/调用方的 %w 包装层
-	wrapped := fmt.Errorf("exec ddl: %w", &mysql.MySQLError{Number: 1062, Message: "x"})
+	wrapped := bizerrors.Wrapf(&mysql.MySQLError{Number: 1062, Message: "x"}, "exec ddl")
 	if !IsIgnorableError(wrapped) {
 		t.Error("errors 链上的 *MySQLError 应被命中")
 	}
@@ -253,7 +253,7 @@ func TestIsIgnorableError_PGTypedPath(t *testing.T) {
 		}
 	}
 	// 包装链穿透
-	wrapped := fmt.Errorf("migrate: %w", &fakePgError{code: "42P07", msg: "x"})
+	wrapped := bizerrors.Wrapf(&fakePgError{code: "42P07", msg: "x"}, "migrate")
 	if !IsIgnorableError(wrapped) {
 		t.Error("errors 链上的 SQLStater 应被命中")
 	}

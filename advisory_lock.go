@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/oekit/logx"
+	bizerrors "github.com/oekit/pkg/errors"
 	"gorm.io/gorm"
 )
 
@@ -85,7 +86,7 @@ func RunWithAdvisoryLock(ctx context.Context, db *gorm.DB, key int64, fn func(tx
 						"key", key, logx.ErrKey, uerr)
 				}
 			}
-			return fmt.Errorf("gormx: advisory lock acquire (key=%d): %w", key, aerr)
+			return bizerrors.Wrapf(aerr, "gormx: advisory lock acquire (key=%d)", key)
 		}
 		defer func() {
 			// 解锁——同一条连接（本原语的存在理由）；收尾路径用
