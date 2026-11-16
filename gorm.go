@@ -1,10 +1,10 @@
 package gormx
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/oekit/logx"
+	bizerrors "github.com/oekit/pkg/errors"
 	"gorm.io/gorm"
 	gormLogger "gorm.io/gorm/logger"
 )
@@ -119,7 +119,7 @@ func Open(dialector gorm.Dialector, opts ...OpenOption) (*gorm.DB, error) {
 	}
 	for _, gormOpt := range cfg.gormOptions {
 		if err := gormOpt.Apply(&gormCfg); err != nil {
-			return nil, fmt.Errorf("apply gorm option: %w", err)
+			return nil, bizerrors.Wrapf(err, "apply gorm option")
 		}
 	}
 

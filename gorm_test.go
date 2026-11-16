@@ -1,9 +1,9 @@
 package gormx
 
 import (
-	"fmt"
 	"testing"
 
+	bizerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/pkg/pagination"
 	"gorm.io/gorm"
 )
@@ -78,7 +78,7 @@ func TestIsUniqueViolation_PGTypedCode(t *testing.T) {
 	if !IsUniqueViolation(err) {
 		t.Error("expected true for typed pg SQLSTATE 23505（类型化字段判定缺失）")
 	}
-	wrapped := fmt.Errorf("migrate: %w", err)
+	wrapped := bizerrors.Wrapf(err, "migrate")
 	if !IsUniqueViolation(wrapped) {
 		t.Error("errors 链上的 SQLState() 投影应被命中")
 	}

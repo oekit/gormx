@@ -2,12 +2,12 @@ package gormx
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/glebarez/sqlite"
+	bizerrors "github.com/oekit/pkg/errors"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -45,7 +45,7 @@ func TestIsBusyErr_TypedPath(t *testing.T) {
 		t.Fatal("SQLITE_LOCKED(6) 应判定为 busy")
 	}
 	// 错误链中间层：errors.As 应穿透 gorm/包装层
-	wrapped := fmt.Errorf("gorm 层包装: %w", &fakeCoder{msg: "The database file is locked (SQLITE_BUSY)", code: 5})
+	wrapped := bizerrors.Wrapf(&fakeCoder{msg: "The database file is locked (SQLITE_BUSY)", code: 5}, "gorm 层包装")
 	if !IsBusyErr(wrapped) {
 		t.Fatal("errors 链应穿透包装层")
 	}

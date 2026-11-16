@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	bizerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/pkg/pagination"
 	"gorm.io/gorm"
 )
@@ -54,7 +55,7 @@ func TestPaginate_SharedRequestConcurrentRace(t *testing.T) {
 			defer wg.Done()
 			resp, err := Paginate[TestBase](db, shared, nil)
 			if err == nil && resp.Total != 5 {
-				err = fmt.Errorf("total = %d, want 5", resp.Total)
+				err = bizerrors.Newf("total = %d, want 5", resp.Total)
 			}
 			errs <- err
 		}()

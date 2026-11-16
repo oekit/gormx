@@ -3,9 +3,9 @@ package gormx
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 
+	bizerrors "github.com/oekit/pkg/errors"
 	"gorm.io/gorm"
 	gclause "gorm.io/gorm/clause"
 )
@@ -62,12 +62,12 @@ func (r *SingletonRepo[T]) primaryKeyColumn() (string, error) {
 		var model T
 		stmt := &gorm.Statement{DB: r.db}
 		if err := stmt.Parse(model); err != nil {
-			r.pkErr = fmt.Errorf("gormx: parse singleton model schema: %w", err)
+			r.pkErr = bizerrors.Wrapf(err, "gormx: parse singleton model schema")
 			return
 		}
 		field := stmt.Schema.PrioritizedPrimaryField
 		if field == nil || field.DBName == "" {
-			r.pkErr = fmt.Errorf("gormx: singleton model %T has no primary key column", model)
+			r.pkErr = bizerrors.Newf("gormx: singleton model %T has no primary key column", model)
 			return
 		}
 		r.pkColumn = field.DBName

@@ -1,9 +1,8 @@
 package gormx
 
 import (
-	"fmt"
-
 	"github.com/oekit/gormx/internal/sqlident"
+	bizerrors "github.com/oekit/pkg/errors"
 	"gorm.io/gorm"
 	gclause "gorm.io/gorm/clause"
 )
@@ -70,14 +69,14 @@ const subqueryColumnPattern = sqlident.PlainPattern
 // clause.Column 走占位符渲染路径。
 func subqueryInExpr(db *gorm.DB, column string, sub *gorm.DB) (gclause.Expression, error) {
 	if column == "" {
-		return nil, fmt.Errorf("gormx: SubqueryIn requires non-empty column")
+		return nil, bizerrors.New("gormx: SubqueryIn requires non-empty column")
 	}
 	if !sqlident.Match(column) {
-		return nil, fmt.Errorf("gormx: SubqueryIn column %q is not a plain identifier "+
+		return nil, bizerrors.Newf("gormx: SubqueryIn column %q is not a plain identifier "+
 			"(expected %s, same discipline as crud Where/Or #100)", column, subqueryColumnPattern)
 	}
 	if sub == nil || sub.Statement == nil {
-		return nil, fmt.Errorf("gormx: SubqueryIn requires a non-nil subquery chain")
+		return nil, bizerrors.New("gormx: SubqueryIn requires a non-nil subquery chain")
 	}
 	inner := sub
 	if wrapsDerivedTable(db.Name()) {
