@@ -235,7 +235,7 @@ func (s *BaseService[T, ID, C, U]) SetAfterDelete(fn func(ctx context.Context, i
 // 必须通过 SetToEntity 设置转换函数，否则返回错误。
 func (s *BaseService[T, ID, C, U]) Create(ctx context.Context, req *C) (*T, error) {
 	if s.toEntity == nil {
-		return nil, s.outErr(fmt.Errorf("crud: toEntity converter not set; call SetToEntity before Create"))
+		return nil, s.outErr(bizerrors.New("crud: toEntity converter not set; call SetToEntity before Create"))
 	}
 	entity := s.toEntity(req)
 
@@ -366,7 +366,7 @@ func (s *BaseService[T, ID, C, U]) applyUpdate(
 	// 必须显式报错而不是假成功。检查顺序两条路径一致（读行 → beforeUpdate
 	// → updateEntity）。
 	if s.updateEntity == nil {
-		return nil, fmt.Errorf("crud: updateEntity converter not set; call SetUpdateEntity before Update")
+		return nil, bizerrors.New("crud: updateEntity converter not set; call SetUpdateEntity before Update")
 	}
 	s.updateEntity(entity, req)
 
@@ -405,7 +405,7 @@ func (s *BaseService[T, ID, C, U]) updateInTx(ctx context.Context, txRepo TxRepo
 	err := txRepo.RunInTx(ctx, func(repo Repository[T, ID]) error {
 		lockRepo, ok := repo.(TxRepository[T, ID])
 		if !ok {
-			return fmt.Errorf("crud: tx repo does not implement TxRepository")
+			return bizerrors.New("crud: tx repo does not implement TxRepository")
 		}
 		entity, err := s.applyUpdate(ctx, id, req,
 			func() (*T, error) { return lockRepo.GetByIDForUpdate(ctx, id) },
