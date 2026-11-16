@@ -1,5 +1,9 @@
 
 
+## [v0.12.2] — 2026-11-16
+
+- refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至 pkg v0.52.0。文案逐字节同形（测试断言零修改），多 %w/%w 居中/哨兵前置形态按仓规保留
+
 ## [v0.12.1] — 2026-11-14
 
 - fix: 审计批报 7 单——池配置逐项 set(#229)/SplitStatements 未闭合块注释 fail-closed(#230,**BREAKING:签名 +error**)/IntSoftDelete.Scan fail-closed(#231)/advisory lock 取消路径尽力解锁(#232)/分页溢出回显一致(#233)/ILIKE 方言分派 MySQL 改写 LOWER(#234)/AuditPlugin 全整数家族(#235)
