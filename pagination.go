@@ -1,8 +1,6 @@
 package gormx
 
 import (
-	"math"
-
 	"github.com/oekit/pkg/pagination"
 	"gorm.io/gorm"
 	gclause "gorm.io/gorm/clause"
@@ -64,18 +62,14 @@ func Paginate[T any](db *gorm.DB, req *pagination.PageRequest, queryFn func(db *
 		return nil, err
 	}
 
-	pages := 0
-	if pageSize > 0 && total > 0 {
-		pages = int(math.Ceil(float64(total) / float64(pageSize)))
-	}
-
-	// #233：溢出回退的回显一致性——Offset() 对溢出页码回退第一页（pkg
-	// Policy.Offset 乘法前判），但此前回显仍自称超大页码：信封说 page=999999
-	// 而内容是第一页。回显落回**实际服务的页**。
-	servedPage := page
-	if page > 1 && pageSize > 0 && page-1 > math.MaxInt/pageSize {
-		servedPage = 1
-	}
+	// 信封计算单源（gormx#248，消费 pkg v0.54.0）：页数与溢出回显页码统一
+	// 走 pkg/pagination 的 ComputePages / ServedPage——此前本地的 math.Ceil
+	// 页数（float64 除法，对超大 total 丢精度）与 #233 手写溢出判据
+	// （offsetOverflows 同款）是 crud/service.go 并存的第二份口径，就此收敛
+	// 到 pkg 单点。语义保持：total<=0 或 pageSize<=0 ⇒ pages=0；溢出页码
+	// （offsetOverflows）回显第一页（#233）。
+	pages := pagination.ComputePages(total, pageSize)
+	servedPage := pagination.ServedPage(page, pageSize)
 
 	return &PageResponse[T]{
 		Items:    items,
