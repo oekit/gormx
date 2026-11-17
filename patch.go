@@ -112,18 +112,16 @@ func patchUpdates[M any](db *gorm.DB, patch any) (map[string]any, error) {
 }
 
 // primaryKeyColumnOf 解析模型 M 的主键列名（单主键；复合主键显式报错）。
+// 解析单源 gormx.PrimaryKeyField（gormx#247）；复合主键校验保留在本侧——
+// 「按主键定位补丁目标行」要求单列主键，是 SavePatch 的语义约束，不是
+// 解析行为：经返回 *Field 的 Schema 回指（field.Schema.PrimaryFields）判定。
 func primaryKeyColumnOf[M any](db *gorm.DB) (string, error) {
-	stmt := &gorm.Statement{DB: db}
-	if err := stmt.Parse(new(M)); err != nil {
-		return "", bizerrors.Wrapf(err, "gormx: SavePatch: parse model schema")
+	field, err := PrimaryKeyField(db, new(M))
+	if err != nil {
+		return "", err
 	}
-	schema := stmt.Schema
-	if len(schema.PrimaryFields) > 1 {
-		return "", bizerrors.Newf("gormx: SavePatch: 模型 %s 是复合主键（%d 列），SavePatch 不支持", schema.Name, len(schema.PrimaryFields))
-	}
-	field := schema.PrioritizedPrimaryField
-	if field == nil || field.DBName == "" {
-		return "", bizerrors.Newf("gormx: SavePatch: 模型 %s 无主键列", schema.Name)
+	if len(field.Schema.PrimaryFields) > 1 {
+		return "", bizerrors.Newf("gormx: SavePatch: 模型 %s 是复合主键（%d 列），SavePatch 不支持", field.Schema.Name, len(field.Schema.PrimaryFields))
 	}
 	return field.DBName, nil
 }

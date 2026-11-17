@@ -127,21 +127,12 @@ func (r *GormRepository[T, ID]) GetByIDForUpdate(ctx context.Context, id ID) (*T
 	return r.GetOne(ctx, q)
 }
 
-// primaryKeyColumn 解析模型主键列名（GORM schema 解析，同根包
-// SingletonRepo.primaryKeyColumn 的做法）：clause.PrimaryColumn 由 GORM 在
-// 语句构建期解析，中性 Query 拿不到该结果，此处显式 Parse（GORM 内部按
-// DB 缓存 schema，重复 Parse 是缓存命中）。
+// primaryKeyColumn 解析模型主键列名（单源 gormx.PrimaryKeyColumn，gormx#247）：
+// clause.PrimaryColumn 由 GORM 在语句构建期解析，中性 Query 拿不到该结果，
+// 此处显式解析（GORM 内部按 DB 缓存 schema，重复 Parse 是缓存命中）。
 func (r *GormRepository[T, ID]) primaryKeyColumn() (string, error) {
 	var model T
-	stmt := &gorm.Statement{DB: r.db}
-	if err := stmt.Parse(model); err != nil {
-		return "", bizerrors.Wrapf(err, "gormrepo: parse model schema")
-	}
-	field := stmt.Schema.PrioritizedPrimaryField
-	if field == nil || field.DBName == "" {
-		return "", bizerrors.Newf("gormrepo: model %T has no primary key column", model)
-	}
-	return field.DBName, nil
+	return gormx.PrimaryKeyColumn(r.db, model)
 }
 
 // GetByID 根据 ID 获取记录。
@@ -271,13 +262,12 @@ func (r *GormRepository[T, ID]) Update(ctx context.Context, entity *T, opts ...c
 	if !rv.IsValid() {
 		return 0, bizerrors.New("gormx: Update requires a non-nil entity")
 	}
-	parse := &gorm.Statement{DB: r.db}
-	if err := parse.Parse(entity); err != nil {
-		return 0, bizerrors.Wrapf(err, "gormx: parse update entity schema")
-	}
-	field := parse.Schema.PrioritizedPrimaryField
-	if field == nil || field.DBName == "" {
-		return 0, bizerrors.Newf("gormx: update entity %T has no primary key column", entity)
+	// 主键字段解析单源 gormx.PrimaryKeyField（gormx#247）：零值判定需要
+	// 字段本体（指针/自定义 Valuer 的零值语义走 field.ValueOf），列名判空
+	// 不足以覆盖。
+	field, err := gormx.PrimaryKeyField(r.db, entity)
+	if err != nil {
+		return 0, err
 	}
 	if _, isZero := field.ValueOf(ctx, rv); isZero {
 		return 0, bizerrors.Newf("gormx: Update requires non-zero primary key on entity %T（零主键 + 查询装饰器会把单行更新静默放大为 scope 内全表 UPDATE，gormx#198）", entity)
