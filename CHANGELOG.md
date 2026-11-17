@@ -1,5 +1,11 @@
 
 
+## [v0.13.0] — 2026-11-18
+
+- crud.Service.List 分页信封补溢出回退,与 #233 Paginate 口径对齐——超大页码信封不再自称与实际服务页不一致(#246);主键列解析五处复制收敛 PrimaryKeyField/PrimaryKeyColumn 单源(#247)
+
+关联问题单：gormx#246、gormx#247。
+
 ## [v0.12.2] — 2026-11-16
 
 - refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至 pkg v0.52.0。文案逐字节同形（测试断言零修改），多 %w/%w 居中/哨兵前置形态按仓规保留
