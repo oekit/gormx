@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	bizerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/pkg/pagination"
@@ -289,6 +290,13 @@ func (s *BaseService[T, ID, C, U]) GetOne(ctx context.Context, q *Query) (*T, er
 // 分页字段为诚实语义：当 q 为 nil 或未调用 Page() 时，查询为全量
 // （未分页），返回的 Page/PageSize 为 0 —— 不假装默认 Page=1/PageSize=20
 // 误导调用方把全量数据当有界结果处理。
+//
+// 溢出回退的回显一致性（#246，与 gormx.Paginate 的 #233 同口径）：仓储实现
+// 经 PageRequest.Offset()/Policy.Offset 的乘法前溢出保护对溢出页码回退
+// 第一页（LIMIT pageSize OFFSET 0），Service 信封必须回显**实际服务的页**，
+// 不再自称超大页码——判据与 pagination.go 的 servedPage 完全同一段
+// （两处注释互指，防再漂移）。未溢出但超出数据范围的页码（如 25 行数据
+// 请求 page=999999）不回退：该页实际服务为空集，信封照实回显请求页码。
 func (s *BaseService[T, ID, C, U]) List(ctx context.Context, q *Query) (*PageResponse[T], error) {
 	list, total, err := s.repo.List(ctx, q)
 	if err != nil {
@@ -310,10 +318,22 @@ func (s *BaseService[T, ID, C, U]) List(ctx context.Context, q *Query) (*PageRes
 		pages = int((total + int64(pageSize) - 1) / int64(pageSize))
 	}
 
+	// #246：溢出回退的回显一致性——PageRequest.Offset()/Policy.Offset 对
+	// 溢出页码回退第一页（pkg 乘法前判），但此前回显仍自称超大页码：信封
+	// 说 page=999999…（math.MaxInt 量级）而内容是第一页。回显落回**实际
+	// 服务的页**。判据与 gormx.Paginate 的 servedPage（pagination.go，#233）
+	// 完全同一段：乘法前判，溢出回绕后的正值不靠「乘后是否为负」兜底；
+	// Query.Page 入口已 Normalize（page>=1、pageSize∈[1,500]），与
+	// Offset() 内部归一化后的判定输入一致。
+	servedPage := page
+	if page > 1 && pageSize > 0 && page-1 > math.MaxInt/pageSize {
+		servedPage = 1
+	}
+
 	return &PageResponse[T]{
 		Items:    list,
 		Total:    total,
-		Page:     page,
+		Page:     servedPage,
 		PageSize: pageSize,
 		Pages:    pages,
 	}, nil
