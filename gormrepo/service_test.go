@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"errors"
+	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -328,6 +330,67 @@ func TestBaseService_List_WithQuery(t *testing.T) {
 	if len(resp.Items) != 2 {
 		t.Errorf("expected 2 items, got %d", len(resp.Items))
 	}
+}
+
+// TestBaseService_List_OverflowPageEchoFallsBack_Integration（#246）：
+// 真库（sqlite）端到端钉住溢出页码的回显一致性——gormrepo 经
+// PageRequest.Offset() 的乘法前溢出保护把溢出页码回退第一页
+// （LIMIT 20 OFFSET 0），crud.Service.List 信封必须回显实际服务的页，
+// 且内容就是第一页。此前信封自称 page=math.MaxInt 而内容是第一页
+// （判据单源见 crud/service.go #246 注释，与 gormx.Paginate #233 同段）。
+func TestBaseService_List_OverflowPageEchoFallsBack_Integration(t *testing.T) {
+	db := setupServiceTestDB(t)
+	repo := NewGormRepository[testUser, int64](db)
+	svc := crud.NewBaseService[testUser, int64, userCreateReq, userUpdateReq](repo).
+		SetToEntity(func(r *userCreateReq) *testUser { return &testUser{Name: r.Name, Age: r.Age, Email: r.Email} })
+
+	ctx := context.Background()
+	for i := 1; i <= 25; i++ {
+		if _, err := svc.Create(ctx, &userCreateReq{Name: fmt.Sprintf("u%02d", i), Age: i}); err != nil {
+			t.Fatalf("seed user %d: %v", i, err)
+		}
+	}
+
+	t.Run("溢出页码回显第一页且内容为第一页", func(t *testing.T) {
+		resp, err := svc.List(ctx, crud.NewQuery().Order("id ASC").Page(math.MaxInt, 20))
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if resp.Page != 1 {
+			t.Errorf("溢出页码 %d 信封应回显实际服务的页 1, got %d", math.MaxInt, resp.Page)
+		}
+		if resp.PageSize != 20 || resp.Total != 25 || resp.Pages != 2 {
+			t.Errorf("pageSize/total/pages = %d/%d/%d, want 20/25/2", resp.PageSize, resp.Total, resp.Pages)
+		}
+		if len(resp.Items) != 20 {
+			t.Fatalf("items = %d, want 20（第一页内容）", len(resp.Items))
+		}
+		for i, item := range resp.Items {
+			want := fmt.Sprintf("u%02d", i+1)
+			if item.Name != want {
+				t.Errorf("items[%d].Name = %q, want %q（必须是第一页，不是自称页码的内容）", i, item.Name, want)
+			}
+		}
+	})
+
+	// 对照（判据边界）：page=999999/pageSize=20 的 offset≈2e7 未溢出，仓储
+	// 实际服务该页——25 行数据下该页为空集，信封照实回显请求页码。
+	// 溢出回退只在 Offset() 真正回退第一页时触发（乘法前判）。
+	t.Run("未溢出的越界页码照实回显空集页", func(t *testing.T) {
+		resp, err := svc.List(ctx, crud.NewQuery().Order("id ASC").Page(999999, 20))
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if resp.Page != 999999 {
+			t.Errorf("未溢出的越界页码 999999 应照实回显, got %d", resp.Page)
+		}
+		if len(resp.Items) != 0 {
+			t.Errorf("越界空集页 items = %d, want 0", len(resp.Items))
+		}
+		if resp.Total != 25 || resp.Pages != 2 {
+			t.Errorf("total/pages = %d/%d, want 25/2", resp.Total, resp.Pages)
+		}
+	})
 }
 
 // --- Update ---
