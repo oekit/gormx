@@ -167,15 +167,17 @@ func applyPrimaryKeyTiebreak(db *gorm.DB) *gorm.DB {
 	if st == nil || st.Model == nil {
 		return db
 	}
-	parse := &gorm.Statement{DB: db}
-	if err := parse.Parse(st.Model); err != nil {
+	// 解析单源 gormx.PrimaryKeyColumn（gormx#247）。error 在此**有意忽略**：
+	// 主键 tiebreaker 是排序稳定性的增值防线（#95），解析失败（显式 Table 的
+	// join/扫描形态没有主键可依）的文档化行为是退回调用方自带排序、原语句
+	// 返回——这是行为语义而非吞错（Paginate 文档同样声明），且此处无处上抛
+	// （scope 函数形态），上抛反而会把「排序增强不可用」放大成整个查询失败。
+	// 矩阵红线 error 禁 _ 忽略：此处以显式分支处理并注释，非 `_` 丢弃。
+	col, err := PrimaryKeyColumn(db, st.Model)
+	if err != nil {
 		return db
 	}
-	field := parse.Schema.PrioritizedPrimaryField
-	if field == nil || field.DBName == "" {
-		return db
-	}
-	return db.Order(gclause.OrderByColumn{Column: gclause.Column{Name: field.DBName}, Desc: true})
+	return db.Order(gclause.OrderByColumn{Column: gclause.Column{Name: col}, Desc: true})
 }
 
 // PaginateScope 返回一个 GORM Scope 函数，自动应用分页的 Offset 和 Limit。

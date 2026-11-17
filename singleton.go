@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sync"
 
-	bizerrors "github.com/oekit/pkg/errors"
 	"gorm.io/gorm"
 	gclause "gorm.io/gorm/clause"
 )
@@ -54,23 +53,15 @@ func NewSingletonRepo[T Model](db *gorm.DB, defaultVal func() T) *SingletonRepo[
 	return &SingletonRepo[T]{db: db, defaultVal: defaultVal}
 }
 
-// primaryKeyColumn 解析模型主键列名（GORM schema 解析，懒加载缓存）。
-// 与 repository 的 UpdateFields（clause.PrimaryColumn）保持一致的承诺：
-// 不要求主键列名为 "id"。
+// primaryKeyColumn 解析模型主键列名（懒加载缓存）。
+// 解析单源 gormx.PrimaryKeyColumn（gormx#247，与 repository 的
+// UpdateFields（clause.PrimaryColumn）同一承诺：不要求主键列名为 "id"）；
+// Once 缓存策略保留在本类型——单例模型的 schema 解析一次后全程复用，
+// 不随每次 Get/Save 重复（即便命中 GORM 的 schema 缓存）。
 func (r *SingletonRepo[T]) primaryKeyColumn() (string, error) {
 	r.once.Do(func() {
 		var model T
-		stmt := &gorm.Statement{DB: r.db}
-		if err := stmt.Parse(model); err != nil {
-			r.pkErr = bizerrors.Wrapf(err, "gormx: parse singleton model schema")
-			return
-		}
-		field := stmt.Schema.PrioritizedPrimaryField
-		if field == nil || field.DBName == "" {
-			r.pkErr = bizerrors.Newf("gormx: singleton model %T has no primary key column", model)
-			return
-		}
-		r.pkColumn = field.DBName
+		r.pkColumn, r.pkErr = PrimaryKeyColumn(r.db, model)
 	})
 	return r.pkColumn, r.pkErr
 }
