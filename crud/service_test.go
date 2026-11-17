@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	bizerrors "github.com/oekit/pkg/errors"
@@ -369,4 +370,58 @@ func TestBaseService_List_PageEnvelope_Honest(t *testing.T) {
 				resp.Page, resp.PageSize, resp.Pages)
 		}
 	})
+}
+
+// TestBaseService_List_OverflowPageEchoFallsBack（#246）：溢出页码的回显
+// 一致性。仓储实现经 PageRequest.Offset()/Policy.Offset 的乘法前溢出保护
+// 对溢出页码回退第一页，Service 信封此前仍自称超大页码——信封说
+// page=math.MaxInt 而内容是第一页。回显必须落回实际服务的页（判据与
+// gormx.Paginate 的 servedPage #233 同一段，crud/service.go 注释互指）。
+func TestBaseService_List_OverflowPageEchoFallsBack(t *testing.T) {
+	ctx := context.Background()
+	items := make([]stubEntity, 20)
+	svc := newStubService(&stubRepo{listItems: items, listTotal: 25})
+
+	cases := []struct {
+		name      string
+		page      int
+		wantPage  int
+		wantPages int
+	}{
+		// math.MaxInt：Offset() 乘法前判溢出 → 仓储实际服务第一页
+		{"math.MaxInt 溢出回退第一页", math.MaxInt, 1, 2},
+		// pkg/pagination/overflow_test.go 的同款触发值：回绕后的正值一半为正
+		{"1<<62+2 溢出回退第一页", 1<<62 + 2, 1, 2},
+		// 未溢出的正常页码不回写
+		{"正常页码原样回显", 2, 2, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := svc.List(ctx, NewQuery().Page(tc.page, 20))
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if resp.Page != tc.wantPage {
+				t.Errorf("溢出页码 %d 信封应回显实际服务的页 %d, got %d（自称超大页码即回显说谎）",
+					tc.page, tc.wantPage, resp.Page)
+			}
+			if resp.PageSize != 20 {
+				t.Errorf("PageSize = %d, want 20", resp.PageSize)
+			}
+			if resp.Pages != tc.wantPages {
+				t.Errorf("Pages = %d, want %d (total=25, pageSize=20)", resp.Pages, tc.wantPages)
+			}
+		})
+	}
+
+	// 对照（判据边界）：page=999999/pageSize=20 的 offset≈2e7 未溢出，仓储
+	// 实际服务该页（数据不足时空集）——信封照实回显请求页码，不回退第一页。
+	// 溢出回退只在 Offset() 真正回退第一页时触发（乘法前判）。
+	resp, err := svc.List(ctx, NewQuery().Page(999999, 20))
+	if err != nil {
+		t.Fatalf("List(999999): %v", err)
+	}
+	if resp.Page != 999999 {
+		t.Errorf("未溢出的越界页码 999999 应照实回显（空集页）, got %d", resp.Page)
+	}
 }
