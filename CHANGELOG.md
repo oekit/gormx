@@ -1,5 +1,11 @@
 
 
+## [v0.13.1] — 2026-11-18
+
+- 分页信封口径收敛 pkg/pagination.ComputePages/ServedPage 单源——Paginate 与 crud.Service.List 删除本地 ceil/溢出判据两份(#248,#233/#246 回归钉零改动)
+
+关联问题单：gormx#248。
+
 ## [v0.13.0] — 2026-11-18
 
 - crud.Service.List 分页信封补溢出回退,与 #233 Paginate 口径对齐——超大页码信封不再自称与实际服务页不一致(#246);主键列解析五处复制收敛 PrimaryKeyField/PrimaryKeyColumn 单源(#247)
