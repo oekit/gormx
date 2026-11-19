@@ -1,5 +1,10 @@
 
 
+## [v0.14.0] — 2026-11-20
+
+- fix(mysql): OpenMySQL 补 redisx#217/#149 同族护栏——Host 空/Port 越界拨号前 fail-fast（修复漏配 db.host 静默连本机）、IPv6 经 net.JoinHostPort 括号化、DSN 改经驱动 FormatDSN 规范出口、构造期 Ping 探活失败回收聚合（新增 WithSkipProbe 供测试/离线跳过）（#262）
+⚠ 行为面：漏配 Host/Port 越界此前静默拼坏 DSN（Host 空实际连本机），升级后启动即报错
+
 ## [v0.13.2] — 2026-11-20
 
 - - fix: OpenMySQL 构造期护栏——Host/Port 校验 + JoinHostPort 括号化 + FormatDSN + 探活失败回收聚合（新增导出 WithSkipProbe 跳过连通性验证选项，当前仅 OpenMySQL 消费）（#262）
