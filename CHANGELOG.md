@@ -1,5 +1,11 @@
 
 
+## [v0.13.2] — 2026-11-20
+
+- - fix: OpenMySQL 构造期护栏——Host/Port 校验 + JoinHostPort 括号化 + FormatDSN + 探活失败回收聚合（新增导出 WithSkipProbe 跳过连通性验证选项，当前仅 OpenMySQL 消费）（#262）
+
+关联问题单：gormx#262。
+
 ## [v0.13.1] — 2026-11-18
 
 - 分页信封口径收敛 pkg/pagination.ComputePages/ServedPage 单源——Paginate 与 crud.Service.List 删除本地 ceil/溢出判据两份(#248,#233/#246 回归钉零改动)
