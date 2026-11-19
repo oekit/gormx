@@ -29,6 +29,9 @@ type openConfig struct {
 	connLifetimeSet bool
 	connIdleTimeSet bool
 	logger          gormLogger.Interface
+	// skipProbe 跳过构造期连通性验证（WithSkipProbe，#262，当前仅
+	// OpenMySQL 消费）。
+	skipProbe bool
 }
 
 // WithLogger 替换 Open 注入的默认 Logger（如带列级脱敏的自定义实例，
@@ -37,6 +40,16 @@ type openConfig struct {
 func WithLogger(l gormLogger.Interface) OpenOption {
 	return func(c *openConfig) {
 		c.logger = l
+	}
+}
+
+// WithSkipProbe 跳过构造期连通性验证（#262，当前仅 OpenMySQL 消费——
+// 构造后的显式 Ping）。仅供测试 / 离线场景使用，生产路径不要关闭：
+// 构造期 Ping 是「配置错连 / 服务不可达却带着死实例继续跑」的最后防线。
+// 注意跳过的只是 OpenMySQL 追加的验证，gorm.Open 自身的拨号行为不变。
+func WithSkipProbe() OpenOption {
+	return func(c *openConfig) {
+		c.skipProbe = true
 	}
 }
 
