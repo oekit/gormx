@@ -43,6 +43,18 @@ type userUpdateReq struct {
 	Email string `json:"email"`
 }
 
+// auditedUser / auditUserIDCtxKey 用于 SetUpdateColumns + AuditPlugin 的
+// 审计列落库回归测试（#268）：用户 ID 经 context 传入，区分 create/update。
+type auditedUser struct {
+	gormx.AuditModel
+	Name string `gorm:"size:100"`
+}
+
+type auditedCreateReq struct{ Name string }
+type auditedUpdateReq struct{ Name string }
+
+type auditUserIDCtxKey struct{}
+
 // --- crud.NewBaseService + Set* setters ---
 
 // TestNewBaseService verifies the constructor and that the Set* setters
@@ -606,6 +618,62 @@ func TestBaseService_Update_ImmutableColumns(t *testing.T) {
 	}
 	if got.Email != "a@e.com" {
 		t.Errorf("immutable 列 email 不得覆写，got %q", got.Email)
+	}
+}
+
+// TestBaseService_Update_AuditColumnWithSelectWhitelist 回归（#268）：
+// SetUpdateColumns("name") 使 repo.Update 走 db.Select(cols).Updates(entity)
+// ——SET 列表只含白名单列，AuditPlugin 改了实体的 UpdatedBy 也被静默剔除
+// （审计链系统性空洞且无日志）。修复后插件把审计列追加进 Statement.Selects，
+// updated_by 必须落库。
+func TestBaseService_Update_AuditColumnWithSelectWhitelist(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if useErr := db.Use(gormx.NewAuditPlugin(func(ctx context.Context) int64 {
+		v, _ := ctx.Value(auditUserIDCtxKey{}).(int64)
+		return v
+	})); useErr != nil {
+		t.Fatalf("use audit plugin: %v", useErr)
+	}
+	if migErr := db.AutoMigrate(&auditedUser{}); migErr != nil {
+		t.Fatalf("migrate: %v", migErr)
+	}
+
+	repo := NewGormRepository[auditedUser, int64](db)
+	svc := crud.NewBaseService[auditedUser, int64, auditedCreateReq, auditedUpdateReq](repo).
+		SetToEntity(func(r *auditedCreateReq) *auditedUser {
+			return &auditedUser{Name: r.Name}
+		}).
+		SetUpdateEntity(func(e *auditedUser, r *auditedUpdateReq) {
+			e.Name = r.Name
+		}).
+		SetUpdateColumns("name")
+
+	createCtx := context.WithValue(context.Background(), auditUserIDCtxKey{}, int64(10))
+	created, err := svc.Create(createCtx, &auditedCreateReq{Name: "audit"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	updateCtx := context.WithValue(context.Background(), auditUserIDCtxKey{}, int64(20))
+	if _, err := svc.Update(updateCtx, created.ID, &auditedUpdateReq{Name: "audit-2"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	var got auditedUser
+	if err := db.First(&got, created.ID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.Name != "audit-2" {
+		t.Errorf("白名单内 name 应更新，got %q", got.Name)
+	}
+	if got.CreatedBy != 10 {
+		t.Errorf("created_by = %d, want 10", got.CreatedBy)
+	}
+	if got.UpdatedBy != 20 {
+		t.Errorf("SetUpdateColumns 白名单把审计列静默剔除：updated_by=%d, want 20", got.UpdatedBy)
 	}
 }
 

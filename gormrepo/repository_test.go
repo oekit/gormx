@@ -452,6 +452,96 @@ func TestGormRepository_List_PagedTotal(t *testing.T) {
 	}
 }
 
+// TestGormRepository_List_PagingTiebreaker 回归（#269）：分页未显式排序时
+// Repository.List 此前直接 OFFSET/LIMIT（无 ORDER BY）——页边界无全序保证，
+// 计划变化/并发写会让跨页行重复或丢失。对齐 gormx.Paginate 的 #95 口径后
+// 按主键 DESC 注入 tiebreaker：页内容稳定、跨页不重复/不丢失。
+func TestGormRepository_List_PagingTiebreaker(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewGormRepository[testUser, int64](db)
+	ctx := context.Background()
+
+	for i := 0; i < 6; i++ {
+		if err := repo.Create(ctx, &testUser{Name: "same", Age: 20, Email: "t@e.com"}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	}
+
+	page1, total, err := repo.List(ctx, crud.NewQuery().Page(1, 3))
+	if err != nil {
+		t.Fatalf("List page 1: %v", err)
+	}
+	if total != 6 {
+		t.Errorf("total = %d, want 6", total)
+	}
+	want1 := []int64{6, 5, 4}
+	if len(page1) != len(want1) {
+		t.Fatalf("page 1 len = %d, want %d", len(page1), len(want1))
+	}
+	for i, u := range page1 {
+		if u.ID != want1[i] {
+			t.Errorf("page 1[%d].ID = %d, want %d（主键 DESC tiebreaker 未生效）", i, u.ID, want1[i])
+		}
+	}
+
+	page2, _, err := repo.List(ctx, crud.NewQuery().Page(2, 3))
+	if err != nil {
+		t.Fatalf("List page 2: %v", err)
+	}
+	want2 := []int64{3, 2, 1}
+	if len(page2) != len(want2) {
+		t.Fatalf("page 2 len = %d, want %d", len(page2), len(want2))
+	}
+	for i, u := range page2 {
+		if u.ID != want2[i] {
+			t.Errorf("page 2[%d].ID = %d, want %d（跨页边界漂移）", i, u.ID, want2[i])
+		}
+	}
+
+	// 显式排序优先：调用方 Order 时不叠加 tiebreaker（尊重调用方口径）
+	asc, _, err := repo.List(ctx, crud.NewQuery().Order("id ASC").Page(1, 3))
+	if err != nil {
+		t.Fatalf("List explicit order: %v", err)
+	}
+	wantAsc := []int64{1, 2, 3}
+	for i, u := range asc {
+		if u.ID != wantAsc[i] {
+			t.Errorf("显式排序被覆盖：asc[%d].ID = %d, want %d", i, u.ID, wantAsc[i])
+		}
+	}
+}
+
+// TestApplyQuery_PagingTiebreakerSQL（#269）：SQL 形态断言——分页 + 无显式
+// 排序且模型可解析 ⇒ 注入 ORDER BY <主键> DESC；显式排序保持调用方口径；
+// 模型不可解析（显式 Table 的扫描形态）保持原语句、由调用方自带排序。
+func TestApplyQuery_PagingTiebreakerSQL(t *testing.T) {
+	db := setupTestDB(t)
+	render := func(tx *gorm.DB, q *crud.Query) string {
+		return ApplyQuery(tx, q).Find(&[]testUser{}).Statement.SQL.String()
+	}
+	fresh := func() *gorm.DB { return db.Session(&gorm.Session{DryRun: true}) }
+
+	sql := render(fresh().Model(&testUser{}), crud.NewQuery().Page(1, 10))
+	upper := strings.ToUpper(sql)
+	if !strings.Contains(upper, "ORDER BY") || !strings.Contains(upper, "ID") || !strings.Contains(upper, "DESC") {
+		t.Errorf("分页未显式排序应注入主键 DESC tiebreaker，got %q", sql)
+	}
+
+	sql = render(fresh().Model(&testUser{}), crud.NewQuery().Order("age ASC").Page(1, 10))
+	upper = strings.ToUpper(sql)
+	if !strings.Contains(upper, "ORDER BY AGE ASC") {
+		t.Errorf("显式排序应保留，got %q", sql)
+	}
+	if strings.Contains(upper, "DESC") {
+		t.Errorf("显式排序不应被 tiebreaker 覆盖，got %q", sql)
+	}
+
+	sql = render(fresh().Table("test_users"), crud.NewQuery().Page(1, 10))
+	if strings.Contains(strings.ToUpper(sql), "ORDER BY") {
+		t.Errorf("模型不可解析时应保持原语句（不注入），got %q", sql)
+	}
+}
+
 // TestGormRepository_CountExists_IgnorePaging 验证 Count/Exists 不受分页影响。
 func TestGormRepository_CountExists_IgnorePaging(t *testing.T) {
 	db := setupTestDB(t)

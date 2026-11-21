@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	gomysql "github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -27,6 +28,9 @@ type pgSQLStater interface {
 // （协议层契约，不受文案漂移影响）。
 const pgUniqueViolationSQLState = "23505"
 
+// mysqlDuplicateEntryErrno 是 MySQL ER_DUP_ENTRY 错误码（协议层契约）。
+const mysqlDuplicateEntryErrno = 1062
+
 // IsUniqueViolation 判断给定 error 是否为唯一键冲突。
 //
 // 覆盖三种驱动的唯一冲突（**窄判据**：只匹配各家确切的唯一冲突措辞与协议层
@@ -34,7 +38,10 @@ const pgUniqueViolationSQLState = "23505"
 // 唯一冲突）：
 //
 //   - sqlite（glebarez 纯 Go 驱动）："UNIQUE constraint failed: <表>.<列>"
-//   - mysql："Error 1062: Duplicate entry …"
+//   - mysql："Error 1062: Duplicate entry …"；错误码走**类型化字段判定**
+//     ——errors.As 命中 *mysql.MySQLError 后比对 Number == 1062（#269）。
+//     文案匹配 "Duplicate entry" 仅作兜底：非英文 lc_messages 或 ProxySQL
+//     改写文案时，唯一冲突会报成 500、SingletonRepo 并发首插不重试。
 //   - pg："… duplicate key value violates unique constraint …"（文案）；
 //     错误码走**类型化字段判定**——errors.As 命中 SQLState() 投影后比对
 //     SQLSTATE == 23505（#163）。旧实现裸子串匹配 "23505" 恰是宽判据：
@@ -58,6 +65,12 @@ func IsUniqueViolation(err error) bool {
 	if errors.Is(err, gorm.ErrDuplicatedKey) {
 		return true
 	}
+	// 类型化字段判定（#269）：MySQL 驱动错误里的 1062 是协议层契约，不受
+	// lc_messages 本地化 / ProxySQL 文案改写影响。
+	var myErr *gomysql.MySQLError
+	if errors.As(err, &myErr) && myErr.Number == mysqlDuplicateEntryErrno {
+		return true
+	}
 	// 类型化字段判定（#163）：pgconn.PgError 的 SQLSTATE == 23505 才算 pg
 	// 唯一冲突——码是协议层契约，且零误命中面（不看文案里的数字）。
 	var pg pgSQLStater
@@ -66,7 +79,7 @@ func IsUniqueViolation(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "UNIQUE constraint failed") || // sqlite
-		strings.Contains(msg, "Duplicate entry") || // mysql 1062
+		strings.Contains(msg, "Duplicate entry") || // mysql 1062 文案兜底
 		strings.Contains(msg, "duplicate key value") || // pg 文案
 		strings.Contains(msg, "(SQLSTATE 23505)") // pgconn.Error() 的码邻接形态（带上下文，非裸数字）
 }

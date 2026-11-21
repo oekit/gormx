@@ -3,6 +3,7 @@ package gormx
 import (
 	"testing"
 
+	gomysql "github.com/go-sql-driver/mysql"
 	bizerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/pkg/pagination"
 	"gorm.io/gorm"
@@ -108,6 +109,32 @@ func TestIsUniqueViolation_PGSQLStateContext(t *testing.T) {
 	err := &mockErr{msg: "ERROR: irgendwas (SQLSTATE 23505)"}
 	if !IsUniqueViolation(err) {
 		t.Error("expected true for '(SQLSTATE 23505)' 邻接形态")
+	}
+}
+
+// TestIsUniqueViolation_MySQLTypedError（#269）：MySQL 错误码类型化判定——
+// errors.As 命中 *mysql.MySQLError 后比对 Number==1062。文案本地化
+// （lc_messages 非英文 / ProxySQL 改写，不含 "Duplicate entry"）也能判出；
+// 包装链透明。
+func TestIsUniqueViolation_MySQLTypedError(t *testing.T) {
+	err := &gomysql.MySQLError{
+		Number:  1062,
+		Message: "Doppelter Eintrag 'dup@e.com' für Schlüssel 'ux_email'",
+	}
+	if !IsUniqueViolation(err) {
+		t.Fatal("expected true for typed mysql errno 1062（类型化字段判定缺失）")
+	}
+	if !IsUniqueViolation(bizerrors.Wrapf(err, "repository")) {
+		t.Fatal("errors 链上的 *mysql.MySQLError 应被命中")
+	}
+	// 负例：其他 MySQL 错误码（1451 外键约束）不得误判成唯一冲突
+	other := &gomysql.MySQLError{Number: 1451, Message: "Cannot delete or update a parent row"}
+	if IsUniqueViolation(other) {
+		t.Error("expected false for mysql errno 1451")
+	}
+	// 文案兜底仍保留（驱动未透出类型化错误的旧路径）
+	if !IsUniqueViolation(&mockErr{msg: "Error 1062: Duplicate entry 'x' for key 'k'"}) {
+		t.Error("文案兜底（Duplicate entry）应保留")
 	}
 }
 

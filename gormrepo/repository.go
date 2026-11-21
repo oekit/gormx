@@ -231,6 +231,9 @@ func (r *GormRepository[T, ID]) List(ctx context.Context, q *crud.Query) ([]T, i
 		return nil, 0, err
 	}
 	if q != nil {
+		// 绑定模型供 applySpec 解析主键、注入分页 tiebreaker（#269）：
+		// 未显式排序的分页查询此前在页边界无全序保证（跨页重复/丢失）。
+		listDB = listDB.Model(new(T))
 		listDB = ApplyQuery(listDB, q)
 	}
 	var list []T

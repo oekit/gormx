@@ -1,10 +1,12 @@
 package gormrepo
 
 import (
+	"strings"
+
+	"github.com/oekit/gormx"
 	"github.com/oekit/gormx/crud"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	"strings"
 )
 
 // compile-time:确保本包实现 crud 仓储接口与事务能力接口。
@@ -15,6 +17,12 @@ var (
 
 // ApplyQuery 将 crud.Query 以完整语句形态（分页 + 排序 + 悲观锁）
 // 应用到 gorm.DB。
+//
+// 排序稳定性（#269）：Page != nil 且未显式 Order 时，若 db 已绑定模型
+// （db.Model(...)，如 Repository.List 内部所做），按模型主键注入
+// ORDER BY <主键> DESC 的确定性 tiebreaker——与 gormx.Paginate 的 #95
+// 同一口径。db 未绑定模型、或主键不可解析（显式 Table 的 join/扫描形态）
+// 时**保持原语句不注入**：这类查询必须由调用方自带稳定排序。
 func ApplyQuery(db *gorm.DB, q *crud.Query) *gorm.DB {
 	return applySpec(db, q.Spec(), applyOptions{withPaging: true})
 }
@@ -113,6 +121,12 @@ func applySpec(db *gorm.DB, spec crud.QuerySpec, opts applyOptions) *gorm.DB {
 		// 应用分页
 		if opts.withPaging && spec.Page != nil {
 			db = db.Offset(spec.Page.Offset()).Limit(spec.Page.Limit())
+			// #269：未显式排序时 OFFSET/LIMIT 无全序保证（计划变化/并发写会
+			// 让跨页行重复或丢失）。对齐 gormx.Paginate 的 #95 口径注入主键
+			// DESC tiebreaker；schema 不可解析时保持现状（见 helper 注释）。
+			if len(spec.Orders) == 0 {
+				db = applyPagingTiebreak(db)
+			}
 		}
 
 		// 应用悲观锁
@@ -122,4 +136,33 @@ func applySpec(db *gorm.DB, spec crud.QuerySpec, opts applyOptions) *gorm.DB {
 	}
 
 	return db
+}
+
+// applyPagingTiebreak 在分页语句未显式排序时注入 ORDER BY <主键> DESC 的
+// 确定性 tiebreaker（#269，对齐 gormx.Paginate 的 #95 口径）：OFFSET/LIMIT
+// 没有 ORDER BY 时 SQL 语义上是**未定义顺序**，同一查询两次执行的页内容
+// 都可能漂移，跨页边界行重复或丢失（对账/导出静默不一致）。
+//
+// 模型取自 Statement.Model（其次 Dest）。调用方未绑定模型、或模型无主键
+// （显式 Table 的 join/扫描形态）时**保持原语句不注入**——这类查询必须由
+// 调用方自带稳定排序，与 pagination.go 的文档化契约一致。解析失败是
+// 「排序增强不可用」而非查询失败，故显式忽略 error 并原样返回（此处是
+// 语义分支而非 `_` 丢弃；上抛会把增强不可用放大成整个查询失败）。
+func applyPagingTiebreak(db *gorm.DB) *gorm.DB {
+	st := db.Statement
+	if st == nil {
+		return db
+	}
+	model := st.Model
+	if model == nil {
+		model = st.Dest
+	}
+	if model == nil {
+		return db
+	}
+	col, err := gormx.PrimaryKeyColumn(db, model)
+	if err != nil {
+		return db
+	}
+	return db.Order(clause.OrderByColumn{Column: clause.Column{Name: col}, Desc: true})
 }
