@@ -273,6 +273,53 @@ func TestOpen_WithConnectionPool(t *testing.T) {
 	}
 }
 
+func TestOpen_WithGormOptions_PreservesRedactLogger(t *testing.T) {
+	dsn := "file:" + uuid.New().String() + "?mode=memory&cache=shared"
+	redact := NewDefaultLogger(WithRedactColumns("password", "token"))
+
+	db, err := Open(sqlite.Open(dsn),
+		WithLogger(redact),
+		WithGormOptions(&gorm.Config{SkipDefaultTransaction: true}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// gorm.Config.Apply 是整结构体覆盖：修复前 WithGormOptions 会把
+	// WithLogger 的脱敏 Logger 清成 nil（gorm.Open 兜底 logger.Default）。
+	if db.Logger != redact {
+		t.Fatalf("WithGormOptions 清掉了 WithLogger 的脱敏 Logger：got %T, want %T", db.Logger, redact)
+	}
+	if !db.SkipDefaultTransaction {
+		t.Error("gorm.Option 的 SkipDefaultTransaction 应仍然生效")
+	}
+
+	// 端到端冒烟：带脱敏 Logger 的 DB 可正常建表/写入
+	if err := db.AutoMigrate(&TestBase{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&TestBase{Name: "x"}).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOpen_WithGormOptions_FillsOnlyZeroLogger：gorm.Option 未提供 Logger 时
+// 仍补 gormx 默认 Logger（#268：先应用 gorm.Option、再仅补零值字段）。
+func TestOpen_WithGormOptions_FillsOnlyZeroLogger(t *testing.T) {
+	dsn := "file:" + uuid.New().String() + "?mode=memory&cache=shared"
+	db, err := Open(sqlite.Open(dsn),
+		WithGormOptions(&gorm.Config{SkipDefaultTransaction: true}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := db.Logger.(*Logger); !ok {
+		t.Fatalf("gorm.Option 未自带 Logger 时应补 gormx 默认 Logger，got %T", db.Logger)
+	}
+	if !db.SkipDefaultTransaction {
+		t.Error("gorm.Option 的 SkipDefaultTransaction 应生效")
+	}
+}
+
 func TestOpen_InvalidDialector(t *testing.T) {
 	// nil dialector 在 gorm v1.31 里可能不立即返回 error (直到第一次 query),
 	// 这里只验证不 panic 且返回的 *gorm.DB 可关闭

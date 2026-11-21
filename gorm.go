@@ -53,7 +53,14 @@ func WithSkipProbe() OpenOption {
 	}
 }
 
-// WithGormOptions 追加底层 gorm.Option。
+// WithGormOptions 追加底层 gorm.Option（如
+// &gorm.Config{SkipDefaultTransaction: true}）。
+//
+// ⚠️ gorm.Config 的 Apply 是**整结构体覆盖**（*config = *c）：多个
+// *gorm.Config 同时传入时后者会整体覆盖前者，请合并成一个传入。
+// gormx 在应用完所有 gorm.Option 之后才补默认值（#268）：WithLogger 传入的
+// 脱敏 Logger 不会被 WithGormOptions 清掉；未显式提供 Logger 时保留
+// gorm.Option 自带的 Logger，两者都缺省才使用 gormx 默认 Logger。
 func WithGormOptions(opts ...gorm.Option) OpenOption {
 	return func(c *openConfig) {
 		c.gormOptions = append(c.gormOptions, opts...)
@@ -123,17 +130,27 @@ func Open(dialector gorm.Dialector, opts ...OpenOption) (*gorm.DB, error) {
 		opt(cfg)
 	}
 
+	// #268：先应用底层 gorm.Option，再仅对仍为零值的字段补 gormx 默认。
+	// gorm.Config 的 Apply 是整结构体覆盖（*config = *c）——此前先设 gormx
+	// 默认 Logger 再 Apply，WithGormOptions(&gorm.Config{...}) 会把脱敏 Logger
+	// 整块清成 nil（gorm.Open 兜底为 logger.Default，password/token 随 SQL
+	// 日志外泄）。WithGormOptions 的语义是「追加底层选项」，不得反向清掉
+	// gormx 的默认值。
 	gormCfg := gorm.Config{}
-	if cfg.logger != nil {
-		// 显式传入的 Logger 原样使用（级别/脱敏配置尊重调用方，不强制 Info）
-		gormCfg.Logger = cfg.logger
-	} else {
-		gormCfg.Logger = NewDefaultLogger().LogMode(gormLogger.Info)
-	}
 	for _, gormOpt := range cfg.gormOptions {
 		if err := gormOpt.Apply(&gormCfg); err != nil {
 			return nil, bizerrors.Wrapf(err, "apply gorm option")
 		}
+	}
+	switch {
+	case cfg.logger != nil:
+		// WithLogger 显式传入的 Logger 原样使用（级别/脱敏配置尊重调用方，
+		// 不强制 Info），并优先于 gorm.Option 携带的 Logger——它是 gormx 层
+		// 最具体的日志诉求（#106）。
+		gormCfg.Logger = cfg.logger
+	case gormCfg.Logger == nil:
+		// 两个来源都没提供 Logger 时才补 gormx 默认（Info 级）。
+		gormCfg.Logger = NewDefaultLogger().LogMode(gormLogger.Info)
 	}
 
 	db, err := gorm.Open(dialector, &gormCfg)
