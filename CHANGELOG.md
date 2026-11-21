@@ -1,5 +1,17 @@
 
 
+## [v0.14.1] — 2026-11-21
+
+- 第三轮设计/缺陷审计（2026-11-21）gormx 修复：
+
+- fix: Open 先应用全部 gorm.Option 再仅补零值默认——WithLogger(WithRedactColumns)+WithGormOptions 组合不再静默清掉脱敏 Logger（SQL 日志 password 外泄修复）；SkipDefaultTransaction 等不再被连带覆盖（#268）
+- fix: 审计插件注入前 maps.Clone 副本——并发复用 fields map 不再 fatal concurrent map writes（#268）
+- fix: Selects 白名单受限时插件显式追加审计列——SetUpdateColumns 下 updated_by 不再被静默剔除（#268）
+- fix: gormrepo List 分页无排序时注入主键 tiebreaker（对齐 #95 Paginate 口径）——跨页行重复/丢失修复（#269）
+- fix: IsUniqueViolation 增加 *mysql.MySQLError 1062 类型化分支（文案匹配留兜底）——非英文 lc_messages 下唯一冲突不再报 500（#269）
+
+关联问题单：gormx#268、gormx#269。
+
 ## [v0.14.0] — 2026-11-20
 
 - fix(mysql): OpenMySQL 补 redisx#217/#149 同族护栏——Host 空/Port 越界拨号前 fail-fast（修复漏配 db.host 静默连本机）、IPv6 经 net.JoinHostPort 括号化、DSN 改经驱动 FormatDSN 规范出口、构造期 Ping 探活失败回收聚合（新增 WithSkipProbe 供测试/离线跳过）（#262）
