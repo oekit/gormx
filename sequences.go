@@ -35,10 +35,14 @@ var ErrSequenceRepairUnsupported = errors.New("gormx: 序列对齐仅支持 post
 // last_value/is_called 得 next；next <= 该列 max(id) 即 setval(max+1, false)
 // （is_called=false 语义：下一个 nextval 恰好发 max+1）。空表 max=0 跳过。
 func RepairSequences(ctx context.Context, db *gorm.DB) ([]string, error) {
-	if db == nil || db.Dialector == nil {
+	if db == nil {
 		return nil, errors.New("gormx: RepairSequences 需要非 nil *gorm.DB")
 	}
-	if name := db.Dialector.Name(); name != "postgres" {
+	dialector := db.Dialector
+	if dialector == nil {
+		return nil, errors.New("gormx: RepairSequences 需要已装配方言的 *gorm.DB")
+	}
+	if name := dialector.Name(); name != "postgres" {
 		return nil, fmt.Errorf("%w（当前 %q）", ErrSequenceRepairUnsupported, name)
 	}
 

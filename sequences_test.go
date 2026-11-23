@@ -87,9 +87,9 @@ func TestRepairSequences_LivePG(t *testing.T) {
 
 	// 修复后走自增的插入必须成功且 id > 102。
 	var id int64
-	if err := db.WithContext(ctx).Raw(
-		`INSERT INTO seq_repair_probe (note) VALUES ('c') RETURNING id`).Scan(&id).Error; err != nil {
-		t.Fatalf("修复后插入失败（序列仍落后）: %v", err)
+	if ierr := db.WithContext(ctx).Raw(
+		`INSERT INTO seq_repair_probe (note) VALUES ('c') RETURNING id`).Scan(&id).Error; ierr != nil {
+		t.Fatalf("修复后插入失败（序列仍落后）: %v", ierr)
 	}
 	if id <= 102 {
 		t.Fatalf("修复后新 id=%d 应 > 102", id)
