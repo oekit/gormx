@@ -1,5 +1,9 @@
 
 
+## [v0.15.1] — 2026-11-24
+
+- docs: CHANGELOG 补齐 v0.15.0 版本节（tag 快照不可变，本版补上）——并带出新的地板：v0.15.1。
+
 ## [v0.15.0] — 2026-11-24
 
 - feat(tenant): 多租户强制谓词注入子包（#225，与 scoper 互补）——scoper 是调用侧逐查询显式 Scopes 的行级可见面；本包是**存储层强制注入**面：经 Register 挂上 GORM 回调后，谓词 tenant_id = tenant.FromContext(ctx) 进每个 Query/Update/Delete——新查询漏挂从「安全事故」变「不可能」。表带 tenant_id 列 ⇒ 谓词无条件注入；无该列的全局基础设施表不受影响（零声明接入）。无租户声明（ctx 未写入）⇒ Default 桶，fail-closed 方向是「无声明 = 默认租户」而非「无声明 = 全可见」。逃生门 WithoutScope（跨租户对账/清理，调用方注释写明理由）；软删除谓词同事注入（表带 deleted_at 列且 ctx 未 WithDeleted ⇒ deleted_at IS NULL），逃生门 WithDeleted 供清理/恢复/取证面；Create 回填 tenant_id 零值时从 ctx 归一值回填，显式写入优先；注册 fail-loud（回调重名/失败即返回 error——回调缺失 = 租户隔离静默失效，必须拒绝半注册状态启动）。
